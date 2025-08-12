@@ -118,7 +118,7 @@
                 {renderMarkdown(content)}
                 {hoveredAnnotation === annotationId && annotation && (
                   <div className="absolute z-10 p-3 bg-white border border-gray-200 rounded-lg shadow-lg -top-2 left-0 transform -translate-y-full" style={{width: '400px'}}>
-                    <div className="text-sm text-gray-800 mb-2">{annotation.note}</div>
+                    <div className="text-gray-800 mb-2" style={{'font-size': '1.1rem', 'font-style':'italic'}}>{annotation.note}</div>
                     <div className="flex gap-1 flex-wrap">
                       {annotation.tags.map(tag => (
                         <span key={tag} className={`px-2 py-1 text-xs rounded bg-${annotation.color}-100 text-${annotation.color}-800`}>
@@ -184,7 +184,10 @@
                 {filteredCities.map(city => (
                   <div
                     key={city.id}
-                    onClick={() => setSelectedCity(city)}
+                    onClick={() => {
+                      setSelectedCity(city);
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
                     className={`city-card ${selectedCity?.id === city.id ? 'selected' : ''}`}
                   >
                     <h3 className="city-name">{city.name}</h3>
@@ -206,20 +209,22 @@
                     <div className="mb-6">
                       <h2 className="city-title font-light text-gray-900 mb-1">{selectedCity.name}</h2>
                       <p className="city-category text-gray-600 font-light mb-4">{selectedCity.category}</p>
-
-                      {selectedCity.image && (
-                        <img
-                          src={selectedCity.image}
-                          alt={selectedCity.name}
-                          className="w-full max-w-lg h-64 object-cover rounded-lg mb-6"
-                        />
-                      )}
                     </div>
 
                     <div className="prose max-w-none">
                       <div className="city-text">
                         {renderAnnotatedText(selectedCity.text)}
                       </div>
+                    </div>
+
+                    <div className="mt-6">
+                     {selectedCity.image && (
+                        <img
+                          src={selectedCity.image}
+                          alt={selectedCity.name}
+                          className="w-full max-w-lg h-full object-cover rounded-lg mb-6"
+                        />
+                      )}
                     </div>
 
                     {/* tags */ }

@@ -1,6 +1,12 @@
 body {
     background-color:	#f4f3ef;
 }
+
+.cities-container {
+  width: 280px; /* reduce from 320px */
+  margin-right: 40px; /* add more gap */
+}
+
 .city-title {
     font-family: "EB Garamond";
     font-style: italic;
@@ -8,9 +14,9 @@ body {
 }
 .city-category {
     font-family: "EB Garamond";
-    /* font-style:oblique; */
+    font-style:normal;
     opacity: 0.6;
-    font-size: 1.15rem;
+    font-size: 1.25rem;
 }
 .city-text {
     font-family: "EB Garamond";
