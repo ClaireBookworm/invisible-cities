@@ -1,0 +1,15 @@
+{
+  "dependencies": {
+    "react": "^19.1.1"
+  },
+  "name": "invisible-cities",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "devDependencies": {},
+  "scripts": {
+    "test": "npm run"
+  },
+  "author": "clairebookworm",
+  "license": "ISC"
+}

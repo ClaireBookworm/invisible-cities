@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Annotation Tool - Invisible Cities</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useRef } = React;
+
+        const AnnotationTool = () => {
+          const [rawText, setRawText] = useState('');
+          const [annotations, setAnnotations] = useState([]);
+          const [selectedText, setSelectedText] = useState('');
+          const [selectionRange, setSelectionRange] = useState(null);
+          const [showAnnotationForm, setShowAnnotationForm] = useState(false);
+          const [currentAnnotation, setCurrentAnnotation] = useState({
+            note: '',
+            color: 'blue',
+            tags: ''
+          });
+          const textareaRef = useRef(null);
+
+          const colors = ['blue', 'purple', 'orange', 'green', 'red', 'yellow', 'pink', 'indigo', 'cyan', 'gray'];
+
+          const handleTextSelection = () => {
+            const textarea = textareaRef.current;
+            if (textarea.selectionStart !== textarea.selectionEnd) {
+              const selected = textarea.value.substring(textarea.selectionStart, textarea.selectionEnd);
+              setSelectedText(selected);
+              setSelectionRange({
+                start: textarea.selectionStart,
+                end: textarea.selectionEnd
+              });
+              setShowAnnotationForm(true);
+            }
+          };
+
+          const addAnnotation = () => {
+            if (!selectionRange || !currentAnnotation.note.trim()) return;
+
+            const newAnnotation = {
+              id: `annotation-${annotations.length + 1}`,
+              start: selectionRange.start,
+              end: selectionRange.end,
+              text: selectedText,
+              note: currentAnnotation.note,
+              color: currentAnnotation.color,
+              tags: currentAnnotation.tags.split(',').map(t => t.trim()).filter(t => t)
+            };
+
+            setAnnotations([...annotations, newAnnotation]);
+            setShowAnnotationForm(false);
+            setCurrentAnnotation({ note: '', color: 'blue', tags: '' });
+            setSelectedText('');
+            setSelectionRange(null);
+          };
+
+          const removeAnnotation = (id) => {
+            setAnnotations(annotations.filter(a => a.id !== id));
+          };
+
+          const generateAnnotatedText = () => {
+            let text = rawText;
+            let offset = 0;
+
+            // sort annotations by start position (reverse order for insertion)
+            const sortedAnnotations = [...annotations].sort((a, b) => b.start - a.start);
+
+            sortedAnnotations.forEach(annotation => {
+              const beforeText = text.substring(0, annotation.start + offset);
+              const annotatedText = `[${annotation.id}]${annotation.text}[/${annotation.id}]`;
+              const afterText = text.substring(annotation.end + offset);
+              
+              text = beforeText + annotatedText + afterText;
+              offset += `[${annotation.id}]`.length + `[/${annotation.id}]`.length;
+            });
+
+            return text;
+          };
+
+          const generateAnnotationData = () => {
+            const data = {};
+            annotations.forEach(annotation => {
+              data[annotation.id] = {
+                note: annotation.note,
+                color: annotation.color,
+                tags: annotation.tags
+              };
+            });
+            return JSON.stringify(data, null, 2);
+          };
+
+          const copyToClipboard = (text) => {
+            navigator.clipboard.writeText(text);
+          };
+
+          return React.createElement('div', { className: "min-h-screen bg-gray-50 p-6" },
+            React.createElement('div', { className: "max-w-6xl mx-auto" }, [
+              React.createElement('h1', { 
+                key: 'title',
+                className: "text-2xl font-light text-gray-900 mb-6" 
+              }, 'annotation tool'),
+
+              React.createElement('div', { key: 'main', className: "grid grid-cols-1 lg:grid-cols-2 gap-6" }, [
+                // input section
+                React.createElement('div', { key: 'input', className: "space-y-4" }, [
+                  React.createElement('div', { key: 'textarea' }, [
+                    React.createElement('label', { 
+                      className: "block text-sm font-medium text-gray-700 mb-2" 
+                    }, 'raw text'),
+                    React.createElement('textarea', {
+                      ref: textareaRef,
+                      value: rawText,
+                      onChange: (e) => setRawText(e.target.value),
+                      onMouseUp: handleTextSelection,
+                      onKeyUp: handleTextSelection,
+                      placeholder: "paste your calvino text here, then select passages to annotate...",
+                      className: "w-full h-64 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent",
+                      style: { resize: 'vertical' }
+                    })
+                  ]),
+
+                  showAnnotationForm && React.createElement('div', {
+                    key: 'form',
+                    className: "p-4 bg-white border border-gray-200 rounded-lg"
+                  }, [
+                    React.createElement('h3', {
+                      key: 'form-title',
+                      className: "font-medium text-gray-900 mb-3"
+                    }, `annotating: "${selectedText.length > 50 ? selectedText.substring(0, 50) + '...' : selectedText}"`),
+                    
+                    React.createElement('div', { key: 'note', className: "mb-3" }, [
+                      React.createElement('label', { 
+                        className: "block text-sm font-medium text-gray-700 mb-1" 
+                      }, 'note'),
+                      React.createElement('textarea', {
+                        value: currentAnnotation.note,
+                        onChange: (e) => setCurrentAnnotation({...currentAnnotation, note: e.target.value}),
+                        placeholder: "your analysis or observation...",
+                        className: "w-full p-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent",
+                        rows: 3
+                      })
+                    ]),
+
+                    React.createElement('div', { key: 'color', className: "mb-3" }, [
+                      React.createElement('label', { 
+                        className: "block text-sm font-medium text-gray-700 mb-1" 
+                      }, 'color'),
+                      React.createElement('div', { className: "flex gap-2 flex-wrap" },
+                        colors.map(color =>
+                          React.createElement('button', {
+                            key: color,
+                            onClick: () => setCurrentAnnotation({...currentAnnotation, color}),
+                            className: `w-6 h-6 rounded border-2 ${
+                              currentAnnotation.color === color ? 'border-gray-800' : 'border-gray-300'
+                            } bg-${color}-200`
+                          })
+                        )
+                      )
+                    ]),
+
+                    React.createElement('div', { key: 'tags', className: "mb-3" }, [
+                      React.createElement('label', { 
+                        className: "block text-sm font-medium text-gray-700 mb-1" 
+                      }, 'tags (comma separated)'),
+                      React.createElement('input', {
+                        type: "text",
+                        value: currentAnnotation.tags,
+                        onChange: (e) => setCurrentAnnotation({...currentAnnotation, tags: e.target.value}),
+                        placeholder: "perception, semiotics, duality",
+                        className: "w-full p-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      })
+                    ]),
+
+                    React.createElement('div', { key: 'buttons', className: "flex gap-2" }, [
+                      React.createElement('button', {
+                        onClick: addAnnotation,
+                        className: "px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                      }, 'add annotation'),
+                      React.createElement('button', {
+                        onClick: () => setShowAnnotationForm(false),
+                        className: "px-4 py-2 bg-gray-300 text-gray-700 rounded hover:bg-gray-400"
+                      }, 'cancel')
+                    ])
+                  ]),
+
+                  // annotations list
+                  annotations.length > 0 && React.createElement('div', { key: 'list' }, [
+                    React.createElement('h3', {
+                      key: 'list-title',
+                      className: "font-medium text-gray-900 mb-3"
+                    }, 'annotations'),
+                    React.createElement('div', { key: 'items', className: "space-y-2" },
+                      annotations.map(annotation =>
+                        React.createElement('div', {
+                          key: annotation.id,
+                          className: `p-3 bg-${annotation.color}-50 border border-${annotation.color}-200 rounded`
+                        }, [
+                          React.createElement('div', {
+                            key: 'text',
+                            className: "font-medium text-sm mb-1"
+                          }, `"${annotation.text}"`),
+                          React.createElement('div', {
+                            key: 'note',
+                            className: "text-sm text-gray-700 mb-2"
+                          }, annotation.note),
+                          React.createElement('div', { key: 'footer', className: "flex justify-between items-center" }, [
+                            React.createElement('div', { key: 'tags', className: "flex gap-1" },
+                              annotation.tags.map(tag =>
+                                React.createElement('span', {
+                                  key: tag,
+                                  className: `px-2 py-1 text-xs rounded bg-${annotation.color}-200 text-${annotation.color}-800`
+                                }, tag)
+                              )
+                            ),
+                            React.createElement('button', {
+                              key: 'remove',
+                              onClick: () => removeAnnotation(annotation.id),
+                              className: "text-red-600 hover:text-red-800 text-sm"
+                            }, 'remove')
+                          ])
+                        ])
+                      )
+                    )
+                  ])
+                ]),
+
+                // output section
+                React.createElement('div', { key: 'output', className: "space-y-4" }, [
+                  React.createElement('div', { key: 'annotated' }, [
+                    React.createElement('div', { className: "flex justify-between items-center mb-2" }, [
+                      React.createElement('label', { 
+                        className: "block text-sm font-medium text-gray-700" 
+                      }, 'annotated text'),
+                      React.createElement('button', {
+                        onClick: () => copyToClipboard(generateAnnotatedText()),
+                        className: "text-sm text-blue-600 hover:text-blue-800"
+                      }, 'copy')
+                    ]),
+                    React.createElement('textarea', {
+                      value: generateAnnotatedText(),
+                      readOnly: true,
+                      className: "w-full h-64 p-3 bg-gray-50 border border-gray-300 rounded-lg font-mono text-sm",
+                      style: { resize: 'vertical' }
+                    })
+                  ]),
+
+                  React.createElement('div', { key: 'data' }, [
+                    React.createElement('div', { className: "flex justify-between items-center mb-2" }, [
+                      React.createElement('label', { 
+                        className: "block text-sm font-medium text-gray-700" 
+                      }, 'annotation data (json)'),
+                      React.createElement('button', {
+                        onClick: () => copyToClipboard(generateAnnotationData()),
+                        className: "text-sm text-blue-600 hover:text-blue-800"
+                      }, 'copy')
+                    ]),
+                    React.createElement('textarea', {
+                      value: generateAnnotationData(),
+                      readOnly: true,
+                      className: "w-full h-32 p-3 bg-gray-50 border border-gray-300 rounded-lg font-mono text-sm",
+                      style: { resize: 'vertical' }
+                    })
+                  ])
+                ])
+              ]),
+
+              React.createElement('div', { key: 'instructions', className: "mt-8 p-4 bg-blue-50 border border-blue-200 rounded-lg" }, [
+                React.createElement('h3', {
+                  key: 'inst-title',
+                  className: "font-medium text-blue-900 mb-2"
+                }, 'how to use'),
+                React.createElement('ol', { key: 'steps', className: "text-sm text-blue-800 space-y-1" }, [
+                  React.createElement('li', { key: '1' }, '1. paste your calvino text in the left textarea'),
+                  React.createElement('li', { key: '2' }, '2. select any passage you want to annotate'),
+                  React.createElement('li', { key: '3' }, '3. add your note, pick a color, and add tags'),
+                  React.createElement('li', { key: '4' }, '4. copy the annotated text and json data'),
+                  React.createElement('li', { key: '5' }, '5. replace the placeholders in your main app')
+                ])
+              ])
+            ])
+          );
+        };
+
+        ReactDOM.render(React.createElement(AnnotationTool), document.getElementById('root'));
+    </script>
+</body>
+</html>

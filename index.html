@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Invisible Cities</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400..800;1,400..800&display=swap');
+</style>
+
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+
+    const InvisibleCitiesExplorer = () => {
+      const [selectedCity, setSelectedCity] = useState(null);
+      const [searchTerm, setSearchTerm] = useState('');
+      const [annotations, setAnnotations] = useState({});
+      const [hoveredAnnotation, setHoveredAnnotation] = useState(null);
+      const [cities, setCities] = useState([]);
+      const [loading, setLoading] = useState(true);
+
+      // load cities from json file
+      useEffect(() => {
+        fetch('./cities.json')
+          .then(response => response.json())
+          .then(data => {
+            setCities(data.cities);
+            setAnnotations(data.annotations || {});
+            if (data.cities.length > 0) {
+              setSelectedCity(data.cities[0]);
+            }
+            setLoading(false);
+          })
+          .catch(error => {
+            console.error('failed to load cities:', error);
+            // fallback to placeholder data
+            const fallbackCities = [
+              {
+                id: "isidora",
+                name: "Isidora",
+                category: "Cities & Desire",
+                text: "When a man rides a long time through wild regions he feels the desire for a city. Finally he comes to Isidora, a city where the buildings have spiral staircases encrusted with spiral seashells, where perfect telescopes and violins are made, where the foreigner hesitating between two women always encounters a third, where cockfights degenerate into bloody brawls among the bettors. He was thinking of all these things when he desired a city. Isidora, therefore, is the city of his dreams: with one difference. The dreamed-of city contained him as a young man; he arrives at Isidora in his old age. In the square there is the wall where the old men sit and watch the young go by; he is seated in a row with them. Desires are already memories.",
+                image: "https://images.unsplash.com/photo-1464983953574-0892a716854b?w=400&h=300&fit=crop",
+                tags: ["desire", "architecture", "music"]
+              }
+            ];
+            setCities(fallbackCities);
+            setAnnotations({
+              'annotation-1': {
+                note: 'calvino often uses metal and stone as contrasting elements - the organic copper against geometric stone',
+                color: 'blue',
+                tags: ['materials', 'contrast']
+              },
+              'annotation-2': {
+                note: 'classic calvino move - the eye/sight as active agent in meaning-making',
+                color: 'purple',
+                tags: ['perception', 'semiotics']
+              }
+            });
+            if (fallbackCities.length > 0) {
+              setSelectedCity(fallbackCities[0]);
+            }
+            setLoading(false);
+          });
+      }, []);
+
+      const filteredCities = useMemo(() => {
+        return cities.filter(city =>
+          city.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          city.category.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          city.tags.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()))
+        );
+      }, [searchTerm, cities]);
+
+
+      const renderMarkdown = (text) => {
+        // handle newlines and markdown formatting
+        const parts = text.split(/(\n|\*\*.*?\*\*|\*.*?\*)/);
+
+        return parts.map((part, index) => {
+          if (part === '\n') {
+            return <br key={index} />;
+          } else if (part.startsWith('**') && part.endsWith('**')) {
+            return <strong key={index}>{part.slice(2, -2)}</strong>;
+          } else if (part.startsWith('*') && part.endsWith('*')) {
+            return <em key={index}>{part.slice(1, -1)}</em>;
+          }
+          return part;
+        });
+      };
+
+      const renderAnnotatedText = (text) => {
+        return text.split(/(\[annotation-\d+\].*?\[\/annotation-\d+\])/).map((part, index) => {
+          const match = part.match(/\[annotation-(\d+)\](.*?)\[\/annotation-\d+\]/);
+          if (match) {
+            const annotationId = `annotation-${match[1]}`;
+            const content = match[2];
+            const annotation = annotations[annotationId];
+
+            return (
+              <span
+                key={index}
+                className={`relative cursor-pointer px-1 rounded transition-all duration-200 ${annotation ? `bg-${annotation.color}-100 hover:bg-${annotation.color}-200 border-l-2 border-${annotation.color}-400` : 'bg-gray-100'
+                  }`}
+                onMouseEnter={() => setHoveredAnnotation(annotationId)}
+                onMouseLeave={() => setHoveredAnnotation(null)}
+              >
+                {renderMarkdown(content)}
+                {hoveredAnnotation === annotationId && annotation && (
+                  <div className="absolute z-10 p-3 bg-white border border-gray-200 rounded-lg shadow-lg -top-2 left-0 transform -translate-y-full" style={{width: '400px'}}>
+                    <div className="text-sm text-gray-800 mb-2">{annotation.note}</div>
+                    <div className="flex gap-1 flex-wrap">
+                      {annotation.tags.map(tag => (
+                        <span key={tag} className={`px-2 py-1 text-xs rounded bg-${annotation.color}-100 text-${annotation.color}-800`}>
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </span>
+            );
+          }
+          return <span key={index}>{renderMarkdown(part)}</span>;
+        });
+      };
+
+      const tagColors = {
+        'memory': 'blue',
+        'architecture': 'green',
+        'light': 'yellow',
+        'signs': 'purple',
+        'nature': 'green',
+        'meaning': 'indigo',
+        'desire': 'red',
+        'perspective': 'pink',
+        'journey': 'orange',
+        'water': 'cyan',
+        'hidden': 'gray',
+        'landscape': 'emerald'
+      };
+
+      if (loading) {
+        return (
+          <div className="min-h-screen bg-white flex items-center justify-center">
+            <div className="text-gray-500">loading cities...</div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen">
+          <div className="max-w-7xl mx-auto px-6 py-8">
+            {/* header */}
+            <div className="mb-8">
+              <h1 className="text-3xl font-light text-gray-900 mb-2">invisible cities</h1>
+              <p className="text-gray-600 font-light">italo calvino</p>
+            </div>
+
+            {/* search */}
+            <div className="mb-8">
+              <input
+                type="text"
+                placeholder="search cities, categories, or tags..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full max-w-md px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+
+            <div className="flex gap-8">
+              {/* city list */}
+              <div className="cities-container">
+                {filteredCities.map(city => (
+                  <div
+                    key={city.id}
+                    onClick={() => setSelectedCity(city)}
+                    className={`city-card ${selectedCity?.id === city.id ? 'selected' : ''}`}
+                  >
+                    <h3 className="city-name">{city.name}</h3>
+                    <p className="city-category">{city.category}</p>
+                    <div className="city-tags">
+                      {city.tags.map(tag => (
+                        <span key={tag} className="city-tag">{tag}</span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+                {/* city detail */ }
+                < div className = "flex-1" >
+                {
+                  selectedCity?(
+                  <div>
+                    <div className="mb-6">
+                      <h2 className="city-title font-light text-gray-900 mb-1">{selectedCity.name}</h2>
+                      <p className="city-category text-gray-600 font-light mb-4">{selectedCity.category}</p>
+
+                      {selectedCity.image && (
+                        <img
+                          src={selectedCity.image}
+                          alt={selectedCity.name}
+                          className="w-full max-w-lg h-64 object-cover rounded-lg mb-6"
+                        />
+                      )}
+                    </div>
+
+                    <div className="prose max-w-none">
+                      <div className="city-text">
+                        {renderAnnotatedText(selectedCity.text)}
+                      </div>
+                    </div>
+
+                    {/* tags */ }
+                < div className = "mt-8 pt-6 border-t border-gray-200" >
+                <div className="flex gap-2 flex-wrap">
+                  {selectedCity.tags.map(tag => (
+                    <span
+                      key={tag}
+                      className={`px-3 py-1 text-sm rounded-full bg-${tagColors[tag] || 'gray'}-100 text-${tagColors[tag] || 'gray'}-800`}
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+                    </div>
+            </div>
+            ) : (
+            <div className="flex items-center justify-center h-96 text-gray-500">
+              select a city to begin exploring
+            </div>
+                )}
+          </div>
+        </div>
+          </div >
+        </div >
+      );
+    };
+
+    ReactDOM.render(<InvisibleCitiesExplorer />, document.getElementById('root'));
+  </script>
+</body>
+
+</html>
