@@ -309,7 +309,7 @@
 
       return (
         <div className="min-h-screen">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-8">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-12 py-4 sm:py-8">
             {/* header */}
             <div className="mb-6 sm:mb-8 flex justify-between items-start">
               <div>
@@ -358,7 +358,7 @@
               />
             </div>
 
-            <div className="flex flex-col lg:flex-row gap-4 lg:gap-8">
+            <div className="flex flex-col lg:flex-row gap-4 lg:gap-8 lg:gap-12">
               {/* city list */}
               <div className={`cities-container ${isMobile ? (sidebarOpen ? 'block' : 'hidden') : ''} ${isMobile ? 'w-full' : ''}`}>
                 {filteredCities.map(city => (
@@ -385,7 +385,7 @@
               </div>
 
               {/* city detail */}
-              <div className="flex-1">
+              <div className="flex-1 min-w-0">
                 {selectedCity ? (
                   <div>
                     <div className="mb-6">

@@ -3,8 +3,9 @@ body {
 }
 
 .cities-container {
-  width: 280px; /* reduce from 320px */
-  margin-right: 40px; /* add more gap */
+  width: 240px; /* reduce from 280px */
+  margin-right: 20px; /* reduce gap */
+  flex-shrink: 0; /* prevent sidebar from shrinking */
 }
 
 .city-title {
