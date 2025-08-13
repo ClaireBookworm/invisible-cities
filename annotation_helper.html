@@ -13,9 +13,11 @@
     <div id="root"></div>
     
     <script type="text/babel">
-        const { useState, useRef } = React;
+        const { useState, useRef, useEffect } = React;
 
         const AnnotationTool = () => {
+          const [cities, setCities] = useState([]);
+          const [selectedCity, setSelectedCity] = useState(null);
           const [rawText, setRawText] = useState('');
           const [annotations, setAnnotations] = useState([]);
           const [selectedText, setSelectedText] = useState('');
@@ -26,9 +28,67 @@
             color: 'blue',
             tags: ''
           });
+          const [nextAnnotationId, setNextAnnotationId] = useState(1);
+          const [existingAnnotations, setExistingAnnotations] = useState({});
           const textareaRef = useRef(null);
+          const [loading, setLoading] = useState(true);
 
           const colors = ['blue', 'purple', 'orange', 'green', 'red', 'yellow', 'pink', 'indigo', 'cyan', 'gray'];
+
+          // Load cities.json on component mount
+          useEffect(() => {
+            fetch('./cities.json')
+              .then(response => response.json())
+              .then(data => {
+                setCities(data.cities);
+                setExistingAnnotations(data.annotations || {});
+                
+                // Calculate next annotation ID
+                const existingIds = Object.keys(data.annotations || {});
+                const maxId = existingIds.length > 0 
+                  ? Math.max(...existingIds.map(id => parseInt(id.replace('annotation-', ''))))
+                  : 0;
+                setNextAnnotationId(maxId + 1);
+                
+                setLoading(false);
+              })
+              .catch(error => {
+                console.error('Failed to load cities:', error);
+                setLoading(false);
+              });
+          }, []);
+
+          const handleCitySelect = (city) => {
+            setSelectedCity(city);
+            setRawText(city.text);
+            
+            // Parse existing annotations from the city text
+            const cityAnnotations = [];
+            const annotationRegex = /\[annotation-(\d+)\](.*?)\[\/annotation-\d+\]/g;
+            let match;
+            let offset = 0;
+            
+            while ((match = annotationRegex.exec(city.text)) !== null) {
+              const id = `annotation-${match[1]}`;
+              const text = match[2];
+              const start = match.index - offset;
+              const end = start + text.length;
+              
+              cityAnnotations.push({
+                id,
+                start,
+                end,
+                text,
+                note: existingAnnotations[id]?.note || '',
+                color: existingAnnotations[id]?.color || 'blue',
+                tags: existingAnnotations[id]?.tags || []
+              });
+              
+              offset += `[${id}]`.length + `[/${id}]`.length;
+            }
+            
+            setAnnotations(cityAnnotations);
+          };
 
           const handleTextSelection = () => {
             const textarea = textareaRef.current;
@@ -43,13 +103,43 @@
             }
           };
 
+          // Convert textarea position to raw text position
+          const getRawTextPosition = (textareaPosition) => {
+            let rawPosition = textareaPosition;
+            let currentPos = 0;
+            
+            // Sort annotations by their position in the textarea
+            const sortedAnnotations = [...annotations].sort((a, b) => a.start - b.start);
+            
+            for (const annotation of sortedAnnotations) {
+              const annotationStart = annotation.start;
+              const annotationEnd = annotation.end;
+              const annotationLength = `[${annotation.id}]`.length + `[/${annotation.id}]`.length;
+              
+              // If the textarea position is after this annotation, adjust
+              if (textareaPosition > annotationStart + annotationLength) {
+                rawPosition -= annotationLength;
+              }
+              // If the textarea position is within this annotation, return the original start
+              else if (textareaPosition > annotationStart && textareaPosition < annotationStart + annotationLength) {
+                return annotationStart;
+              }
+            }
+            
+            return rawPosition;
+          };
+
           const addAnnotation = () => {
             if (!selectionRange || !currentAnnotation.note.trim()) return;
 
+            // Convert textarea positions to raw text positions
+            const rawStart = getRawTextPosition(selectionRange.start);
+            const rawEnd = getRawTextPosition(selectionRange.end);
+
             const newAnnotation = {
-              id: `annotation-${annotations.length + 1}`,
-              start: selectionRange.start,
-              end: selectionRange.end,
+              id: `annotation-${nextAnnotationId}`,
+              start: rawStart,
+              end: rawEnd,
               text: selectedText,
               note: currentAnnotation.note,
               color: currentAnnotation.color,
@@ -57,6 +147,7 @@
             };
 
             setAnnotations([...annotations, newAnnotation]);
+            setNextAnnotationId(nextAnnotationId + 1);
             setShowAnnotationForm(false);
             setCurrentAnnotation({ note: '', color: 'blue', tags: '' });
             setSelectedText('');
@@ -71,7 +162,7 @@
             let text = rawText;
             let offset = 0;
 
-            // sort annotations by start position (reverse order for insertion)
+            // Sort annotations by start position (reverse order for insertion)
             const sortedAnnotations = [...annotations].sort((a, b) => b.start - a.start);
 
             sortedAnnotations.forEach(annotation => {
@@ -102,29 +193,97 @@
             navigator.clipboard.writeText(text);
           };
 
+          const updateCityText = () => {
+            if (!selectedCity) return;
+            
+            const updatedCity = {
+              ...selectedCity,
+              text: generateAnnotatedText()
+            };
+            
+            // Update the cities array
+            setCities(cities.map(city => 
+              city.id === selectedCity.id ? updatedCity : city
+            ));
+            setSelectedCity(updatedCity);
+          };
+
+          const exportUpdatedCities = () => {
+            const updatedCities = cities.map(city => 
+              city.id === selectedCity.id 
+                ? { ...city, text: generateAnnotatedText() }
+                : city
+            );
+            
+            const exportData = {
+              cities: updatedCities,
+              annotations: generateAnnotationData()
+            };
+            
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'cities_updated.json';
+            a.click();
+            URL.revokeObjectURL(url);
+          };
+
+          if (loading) {
+            return React.createElement('div', { className: "min-h-screen bg-gray-50 flex items-center justify-center" },
+              React.createElement('div', { className: "text-gray-500" }, 'Loading cities...')
+            );
+          }
+
           return React.createElement('div', { className: "min-h-screen bg-gray-50 p-6" },
-            React.createElement('div', { className: "max-w-6xl mx-auto" }, [
+            React.createElement('div', { className: "max-w-7xl mx-auto" }, [
               React.createElement('h1', { 
                 key: 'title',
                 className: "text-2xl font-light text-gray-900 mb-6" 
               }, 'annotation tool'),
 
-              React.createElement('div', { key: 'main', className: "grid grid-cols-1 lg:grid-cols-2 gap-6" }, [
+              // City selector
+              React.createElement('div', { key: 'city-selector', className: "mb-6" }, [
+                React.createElement('label', { 
+                  key: 'label',
+                  className: "block text-sm font-medium text-gray-700 mb-2" 
+                }, 'select city'),
+                React.createElement('select', {
+                  key: 'select',
+                  value: selectedCity?.id || '',
+                  onChange: (e) => {
+                    const city = cities.find(c => c.id === e.target.value);
+                    if (city) handleCitySelect(city);
+                  },
+                  className: "w-full max-w-md p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                }, [
+                  React.createElement('option', { key: 'default', value: '' }, 'Choose a city...'),
+                  ...cities.map(city => 
+                    React.createElement('option', { key: city.id, value: city.id }, city.name)
+                  )
+                ])
+              ]),
+
+              selectedCity && React.createElement('div', { key: 'main', className: "grid grid-cols-1 lg:grid-cols-2 gap-6" }, [
                 // input section
                 React.createElement('div', { key: 'input', className: "space-y-4" }, [
                   React.createElement('div', { key: 'textarea' }, [
                     React.createElement('label', { 
                       className: "block text-sm font-medium text-gray-700 mb-2" 
-                    }, 'raw text'),
+                    }, 'city text'),
                     React.createElement('textarea', {
                       ref: textareaRef,
-                      value: rawText,
-                      onChange: (e) => setRawText(e.target.value),
+                      value: generateAnnotatedText(),
+                      onChange: (e) => {
+                        // Don't allow direct editing of annotated text
+                        // This maintains the annotation structure
+                      },
                       onMouseUp: handleTextSelection,
                       onKeyUp: handleTextSelection,
-                      placeholder: "paste your calvino text here, then select passages to annotate...",
-                      className: "w-full h-64 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent",
-                      style: { resize: 'vertical' }
+                      placeholder: "Select passages to annotate...",
+                      className: "w-full h-64 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-gray-50",
+                      style: { resize: 'vertical' },
+                      readOnly: true
                     })
                   ]),
 
@@ -235,6 +394,17 @@
 
                 // output section
                 React.createElement('div', { key: 'output', className: "space-y-4" }, [
+                  React.createElement('div', { key: 'buttons', className: "flex gap-2 mb-4" }, [
+                    React.createElement('button', {
+                      onClick: updateCityText,
+                      className: "px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+                    }, 'update city text'),
+                    React.createElement('button', {
+                      onClick: exportUpdatedCities,
+                      className: "px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700"
+                    }, 'export updated cities.json')
+                  ]),
+
                   React.createElement('div', { key: 'annotated' }, [
                     React.createElement('div', { className: "flex justify-between items-center mb-2" }, [
                       React.createElement('label', { 
@@ -279,11 +449,12 @@
                   className: "font-medium text-blue-900 mb-2"
                 }, 'how to use'),
                 React.createElement('ol', { key: 'steps', className: "text-sm text-blue-800 space-y-1" }, [
-                  React.createElement('li', { key: '1' }, '1. paste your calvino text in the left textarea'),
+                  React.createElement('li', { key: '1' }, '1. select a city from the dropdown'),
                   React.createElement('li', { key: '2' }, '2. select any passage you want to annotate'),
                   React.createElement('li', { key: '3' }, '3. add your note, pick a color, and add tags'),
-                  React.createElement('li', { key: '4' }, '4. copy the annotated text and json data'),
-                  React.createElement('li', { key: '5' }, '5. replace the placeholders in your main app')
+                  React.createElement('li', { key: '4' }, '4. use "update city text" to apply changes'),
+                  React.createElement('li', { key: '5' }, '5. export the updated cities.json file'),
+                  React.createElement('li', { key: '6' }, '6. replace your original cities.json with the exported file')
                 ])
               ])
             ])

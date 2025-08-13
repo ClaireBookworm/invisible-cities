@@ -13,13 +13,25 @@
 </head>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400..800;1,400..800&display=swap');
+  
+  /* Smooth tooltip transitions */
+  .annotation-tooltip {
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out;
+  }
+  
+  .annotation-tooltip.show {
+    opacity: 1;
+    transform: translateY(0);
+  }
 </style>
 
 <body>
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useMemo, useEffect } = React;
+    const { useState, useMemo, useEffect, useRef } = React;
 
     const InvisibleCitiesExplorer = () => {
       const [selectedCity, setSelectedCity] = useState(null);
@@ -29,6 +41,29 @@
       const [cities, setCities] = useState([]);
       const [loading, setLoading] = useState(true);
       const [hoverTimer, setHoverTimer] = useState(null);
+      const [sidebarOpen, setSidebarOpen] = useState(false);
+      const [isMobile, setIsMobile] = useState(false);
+      const [cursorPosition, setCursorPosition] = useState({ x: 0, y: 0 });
+      const [tooltipVisible, setTooltipVisible] = useState(false);
+      const [tooltipLocked, setTooltipLocked] = useState(false);
+      const [lockedPosition, setLockedPosition] = useState(null);
+      const annotationRef = useRef(null);
+
+      // Check if mobile on mount and resize
+      useEffect(() => {
+        const checkMobile = () => {
+          setIsMobile(window.innerWidth < 768);
+          if (window.innerWidth >= 768) {
+            setSidebarOpen(false);
+          }
+        };
+        
+        checkMobile();
+        window.addEventListener('resize', checkMobile);
+        return () => window.removeEventListener('resize', checkMobile);
+      }, []);
+
+
 
       // load cities from json file
       useEffect(() => {
@@ -37,9 +72,25 @@
           .then(data => {
             setCities(data.cities);
             setAnnotations(data.annotations || {});
-            if (data.cities.length > 0) {
+            
+            // Handle URL parameters for direct city selection
+            const urlParams = new URLSearchParams(window.location.search);
+            const cityId = urlParams.get('city');
+            
+            if (cityId && data.cities.length > 0) {
+              const targetCity = data.cities.find(city => city.id === cityId);
+              if (targetCity) {
+                setSelectedCity(targetCity);
+                // Scroll to top when city is selected via URL
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              } else {
+                // Fallback to first city if specified city not found
+                setSelectedCity(data.cities[0]);
+              }
+            } else if (data.cities.length > 0) {
               setSelectedCity(data.cities[0]);
             }
+            
             setLoading(false);
           })
           .catch(error => {
@@ -83,6 +134,43 @@
         );
       }, [searchTerm, cities]);
 
+      // Calculate tooltip position based on cursor position
+      const getTooltipPosition = (cursorX, cursorY) => {
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+        const tooltipWidth = isMobile ? 280 : 400;
+        const tooltipHeight = 120; // approximate height
+        const margin = 20;
+        
+        let left = cursorX - (tooltipWidth / 2); // center tooltip on cursor
+        let top = cursorY - tooltipHeight - 35; // position above cursor with more space
+        
+        // Check if tooltip would go off the right edge
+        if (left + tooltipWidth + margin > viewportWidth) {
+          left = viewportWidth - tooltipWidth - margin;
+        }
+        
+        // Check if tooltip would go off the left edge
+        if (left < margin) {
+          left = margin;
+        }
+        
+        // Check if tooltip would go off the top edge
+        if (top < margin) {
+          top = cursorY + 40; // position below cursor with increased gap
+        }
+        
+        // Check if tooltip would go off the bottom edge when positioned below
+        if (top + tooltipHeight + margin > viewportHeight) {
+          top = viewportHeight - tooltipHeight - margin;
+        }
+        
+        return { 
+          left: `${left}px`, 
+          top: `${top}px`,
+          position: 'fixed'
+        };
+      };
 
       const renderMarkdown = (text) => {
         // handle newlines and markdown formatting
@@ -128,42 +216,66 @@
                 key={index}
                 className={`relative cursor-pointer px-1 rounded transition-all duration-200 ${annotation ? `bg-${annotation.color}-100 hover:bg-${annotation.color}-200 border-l-2 border-${annotation.color}-400` : 'bg-gray-100'
                   }`}
-                onMouseEnter={() => {
+                onMouseEnter={(e) => {
                   if (hoverTimer) clearTimeout(hoverTimer);
                   setHoveredAnnotation(annotationId);
+                  // Only set position if tooltip isn't already locked
+                  if (!tooltipLocked && hoveredAnnotation !== annotationId) {
+                    const newPosition = { x: e.clientX, y: e.clientY };
+                    setCursorPosition(newPosition);
+                    setLockedPosition(null);
+                  }
+                  // Small delay to trigger the animation
+                  setTimeout(() => setTooltipVisible(true), 10);
                 }}
                 onMouseLeave={() => {
-                  const timer = setTimeout(() => {
-                    setHoveredAnnotation(null);
-                  }, 1000); // 1 second delay
-                  setHoverTimer(timer);
+                  // Don't immediately hide if tooltip is locked
+                  if (!tooltipLocked) {
+                    setTooltipVisible(false);
+                    setLockedPosition(null);
+                    const timer = setTimeout(() => {
+                      setHoveredAnnotation(null);
+                    }, 1000); // 1 second delay
+                    setHoverTimer(timer);
+                  }
                 }}
-                // onMouseEnter={() => setHoveredAnnotation(annotationId)}
-                // onMouseLeave={() => setHoveredAnnotation(null)}
               >
                 {renderMarkdown(content)}
                 {hoveredAnnotation === annotationId && annotation && (
-                    <div className="absolute z-10 p-3 bg-white border border-gray-200 rounded-lg shadow-lg -top-2 left-0 transform -translate-y-full opacity-95"
-                  style={{width: '400px'}}
-                  onMouseEnter={() => {
-                    if (hoverTimer) clearTimeout(hoverTimer);
-                  }}
-                  onMouseLeave={() => {
-                    const timer = setTimeout(() => {
-                      setHoveredAnnotation(null);
-                    }, 500); // shorter delay when leaving tooltip
-                    setHoverTimer(timer);
-                  }}
-                  >
-                    <div className="text-gray-800 mb-2" style={{'font-size': '1.1rem', 'font-style':'italic'}}>{renderMarkdown(annotation.note)}</div>
-                    <div className="flex gap-1 flex-wrap">
-                      {annotation.tags.map(tag => (
-                        <span key={tag} className={`px-2 py-1 text-xs rounded bg-${annotation.color}-100 text-${annotation.color}-800`}>
-                          {tag}
-                        </span>
-                      ))}
+                    <div 
+                      className={`fixed z-10 p-3 bg-white border border-gray-200 rounded-lg shadow-lg annotation-tooltip ${tooltipVisible ? 'show' : ''}`}
+                      style={{
+                        width: isMobile ? '280px' : '400px',
+                        ...getTooltipPosition(
+                          lockedPosition ? lockedPosition.x : cursorPosition.x, 
+                          lockedPosition ? lockedPosition.y : cursorPosition.y
+                        )
+                      }}
+                      onMouseEnter={() => {
+                        if (hoverTimer) clearTimeout(hoverTimer);
+                        setTooltipLocked(true);
+                        // Lock the current position
+                        setLockedPosition({ x: cursorPosition.x, y: cursorPosition.y });
+                      }}
+                      onMouseLeave={() => {
+                        setTooltipLocked(false);
+                        setLockedPosition(null);
+                        setTooltipVisible(false);
+                        const timer = setTimeout(() => {
+                          setHoveredAnnotation(null);
+                        }, 1000); // 1 second delay when leaving tooltip
+                        setHoverTimer(timer);
+                      }}
+                    >
+                      <div className="text-gray-800 mb-2" style={{'font-size': '1.1rem', 'font-style':'italic'}}>{renderMarkdown(annotation.note)}</div>
+                      <div className="flex gap-1 flex-wrap">
+                        {annotation.tags.map(tag => (
+                          <span key={tag} className={`px-2 py-1 text-xs rounded bg-${annotation.color}-100 text-${annotation.color}-800`}>
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
                     </div>
-                  </div>
                 )}
               </span>
             );
@@ -197,15 +309,46 @@
 
       return (
         <div className="min-h-screen">
-          <div className="max-w-7xl mx-auto px-6 py-8">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-8">
             {/* header */}
-            <div className="mb-8">
-              <h1 className="text-3xl font-light text-gray-900 mb-2">invisible cities</h1>
-              <p className="text-gray-600 font-light">italo calvino</p>
+            <div className="mb-6 sm:mb-8 flex justify-between items-start">
+              <div>
+                <h1 className="text-2xl sm:text-3xl font-light text-gray-900 mb-2">invisible cities</h1>
+                <p className="text-gray-600 font-light">italo calvino</p>
+              </div>
+              <div className="flex gap-6">
+                <a 
+                  href="overview.html" 
+                  className="text-md text-gray-600 hover:text-gray-900 transition-colors pt-1"
+                >
+                  overview
+                </a>
+                <a 
+                  href="about.html" 
+                  className="text-md text-gray-600 hover:text-gray-900 transition-colors pt-1"
+                >
+                  about
+                </a>
+              </div>
             </div>
 
+            {/* mobile menu button */}
+            {isMobile && (
+              <div className="mb-4">
+                <button
+                  onClick={() => setSidebarOpen(!sidebarOpen)}
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                  </svg>
+                  {sidebarOpen ? 'Hide Cities' : 'Show Cities'}
+                </button>
+              </div>
+            )}
+
             {/* search */}
-            <div className="mb-8">
+            <div className="mb-6 sm:mb-8">
               <input
                 type="text"
                 placeholder="search cities, categories, or tags..."
@@ -215,14 +358,17 @@
               />
             </div>
 
-            <div className="flex gap-8">
+            <div className="flex flex-col lg:flex-row gap-4 lg:gap-8">
               {/* city list */}
-              <div className="cities-container">
+              <div className={`cities-container ${isMobile ? (sidebarOpen ? 'block' : 'hidden') : ''} ${isMobile ? 'w-full' : ''}`}>
                 {filteredCities.map(city => (
                   <div
                     key={city.id}
                     onClick={() => {
                       setSelectedCity(city);
+                      if (isMobile) {
+                        setSidebarOpen(false);
+                      }
                       window.scrollTo({ top: 0, behavior: 'smooth' });
                     }}
                     className={`city-card ${selectedCity?.id === city.id ? 'selected' : ''}`}
@@ -238,10 +384,9 @@
                 ))}
               </div>
 
-                {/* city detail */ }
-                < div className = "flex-1" >
-                {
-                  selectedCity?(
+              {/* city detail */}
+              <div className="flex-1">
+                {selectedCity ? (
                   <div>
                     <div className="mb-6">
                       <h2 className="city-title font-light text-gray-900 mb-1">{selectedCity.name}</h2>
@@ -255,7 +400,7 @@
                     </div>
 
                     <div className="mt-6">
-                     {selectedCity.image && (
+                      {selectedCity.image && (
                         <img
                           src={selectedCity.image}
                           alt={selectedCity.name}
@@ -264,29 +409,29 @@
                       )}
                     </div>
 
-                    {/* tags */ }
-                < div className = "mt-8 pt-6 border-t border-gray-200" >
-                <div className="flex gap-2 flex-wrap">
-                  {selectedCity.tags.map(tag => (
-                    <span
-                      key={tag}
-                      className={`px-3 py-1 text-sm rounded-full bg-${tagColors[tag] || 'gray'}-100 text-${tagColors[tag] || 'gray'}-800`}
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
+                    {/* tags */}
+                    <div className="mt-8 pt-6 border-t border-gray-200">
+                      <div className="flex gap-2 flex-wrap">
+                        {selectedCity.tags.map(tag => (
+                          <span
+                            key={tag}
+                            className={`px-3 py-1 text-sm rounded-full bg-${tagColors[tag] || 'gray'}-100 text-${tagColors[tag] || 'gray'}-800`}
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
                     </div>
-            </div>
-            ) : (
-            <div className="flex items-center justify-center h-96 text-gray-500">
-              select a city to begin exploring
-            </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center h-96 text-gray-500">
+                    select a city to begin exploring
+                  </div>
                 )}
+              </div>
+            </div>
           </div>
         </div>
-          </div >
-        </div >
       );
     };
 

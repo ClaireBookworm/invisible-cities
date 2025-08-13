@@ -31,6 +31,40 @@ body {
   flex-direction: column;
 }
 
+/* Mobile responsive styles */
+@media (max-width: 1023px) {
+  .cities-container {
+    width: 100%;
+    margin-right: 0;
+  }
+  
+  .city-text {
+    font-size: 1.4rem;
+  }
+  
+  .city-title {
+    font-size: 1.4rem;
+  }
+  
+  .city-category {
+    font-size: 1.1rem;
+  }
+}
+
+@media (max-width: 767px) {
+  .city-text {
+    font-size: 1.2rem;
+  }
+  
+  .city-title {
+    font-size: 1.3rem;
+  }
+  
+  .city-category {
+    font-size: 1rem;
+  }
+}
+
 .city-card {
   background: #fefefe;
   border: 1px solid #e8e5e0;
