@@ -60,9 +60,9 @@
 
           const handleCitySelect = (city) => {
             setSelectedCity(city);
-            setRawText(city.text);
             
-            // Parse existing annotations from the city text
+            // Extract the raw text by removing existing annotations
+            let rawText = city.text;
             const cityAnnotations = [];
             const annotationRegex = /\[annotation-(\d+)\](.*?)\[\/annotation-\d+\]/g;
             let match;
@@ -87,6 +87,9 @@
               offset += `[${id}]`.length + `[/${id}]`.length;
             }
             
+            // Remove all annotation tags to get the raw text
+            rawText = city.text.replace(/\[annotation-\d+\](.*?)\[\/annotation-\d+\]/g, '$1');
+            setRawText(rawText);
             setAnnotations(cityAnnotations);
           };
 
