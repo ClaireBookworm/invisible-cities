@@ -25,6 +25,40 @@
     opacity: 1;
     transform: translateY(0);
   }
+  
+  /* Annotation mode styles */
+  .select-text {
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
+    user-select: text;
+  }
+  
+  .select-text::selection {
+    background-color: rgba(59, 130, 246, 0.3);
+    color: inherit;
+  }
+  
+  .select-text::-moz-selection {
+    background-color: rgba(59, 130, 246, 0.3);
+    color: inherit;
+  }
+  
+  /* Animation for annotation form */
+  .annotation-form {
+    animation: fadeInUp 0.2s ease-out;
+  }
+  
+  @keyframes fadeInUp {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
 </style>
 
 <body>
@@ -48,6 +82,26 @@
       const [tooltipLocked, setTooltipLocked] = useState(false);
       const [lockedPosition, setLockedPosition] = useState(null);
       const annotationRef = useRef(null);
+      
+      // New annotation editing states
+      const [editMode, setEditMode] = useState(false);
+      const [showAnnotationForm, setShowAnnotationForm] = useState(false);
+      const [selectedText, setSelectedText] = useState('');
+      const [selectionInfo, setSelectionInfo] = useState(null);
+      const [annotationForm, setAnnotationForm] = useState({
+        note: '',
+        color: 'blue',
+        tags: ''
+      });
+      const [nextAnnotationId, setNextAnnotationId] = useState(1);
+      const textContainerRef = useRef(null);
+      
+      // Admin mode states
+      const [adminMode, setAdminMode] = useState(false);
+      const [showAdminLogin, setShowAdminLogin] = useState(false);
+      const [adminPassword, setAdminPassword] = useState('');
+      const [showUpdatePreview, setShowUpdatePreview] = useState(false);
+      const [copied, setCopied] = useState(false);
 
       // Check if mobile on mount and resize
       useEffect(() => {
@@ -71,7 +125,12 @@
           .then(response => response.json())
           .then(data => {
             setCities(data.cities);
-            setAnnotations(data.annotations || {});
+            
+            // Merge file annotations with localStorage annotations
+            const fileAnnotations = data.annotations || {};
+            const storedAnnotations = loadAnnotationsFromStorage();
+            const mergedAnnotations = { ...fileAnnotations, ...storedAnnotations };
+            setAnnotations(mergedAnnotations);
             
             // Handle URL parameters for direct city selection
             const urlParams = new URLSearchParams(window.location.search);
@@ -125,6 +184,278 @@
             setLoading(false);
           });
       }, []);
+
+      // Text selection handling for annotations
+      useEffect(() => {
+        const handleSelection = () => {
+          if (!editMode || !textContainerRef.current) return;
+          
+          const selection = window.getSelection();
+          if (selection.rangeCount > 0 && !selection.isCollapsed) {
+            const range = selection.getRangeAt(0);
+            const selectedText = selection.toString().trim();
+            
+            if (selectedText.length > 0 && textContainerRef.current.contains(range.commonAncestorContainer)) {
+              const rect = range.getBoundingClientRect();
+              setSelectedText(selectedText);
+              setSelectionInfo({
+                text: selectedText,
+                range: range.cloneRange(),
+                position: {
+                  x: rect.left + rect.width / 2,
+                  y: rect.top - 10
+                }
+              });
+              setShowAnnotationForm(true);
+            }
+          }
+        };
+
+        const handleClickOutside = (e) => {
+          if (showAnnotationForm && !e.target.closest('.annotation-form')) {
+            setShowAnnotationForm(false);
+            setSelectionInfo(null);
+            setSelectedText('');
+          }
+        };
+
+        if (editMode) {
+          document.addEventListener('mouseup', handleSelection);
+          document.addEventListener('click', handleClickOutside);
+        }
+
+        return () => {
+          document.removeEventListener('mouseup', handleSelection);
+          document.removeEventListener('click', handleClickOutside);
+        };
+      }, [editMode, showAnnotationForm]);
+
+      // Calculate next annotation ID when annotations change
+      useEffect(() => {
+        const existingIds = Object.keys(annotations);
+        const maxId = existingIds.length > 0
+          ? Math.max(...existingIds.map(id => parseInt(id.replace('annotation-', ''))))
+          : 0;
+        setNextAnnotationId(maxId + 1);
+      }, [annotations]);
+
+      // Keyboard shortcuts
+      useEffect(() => {
+        const handleKeyPress = (e) => {
+          // Ctrl/Cmd + shift + H to toggle annotation mode
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'h') {
+            e.preventDefault();
+            setEditMode(!editMode);
+            return;
+            }
+
+          // Escape to cancel annotation form
+          if (e.key === 'Escape' && showAnnotationForm) {
+            setShowAnnotationForm(false);
+            setSelectionInfo(null);
+            setSelectedText('');
+            setAnnotationForm({ note: '', color: 'blue', tags: '' });
+            return;
+          }
+
+          // Enter to submit annotation (when form is open and note is filled)
+          if (e.key === 'Enter' && e.ctrlKey && showAnnotationForm && annotationForm.note.trim()) {
+            e.preventDefault();
+            createAnnotation();
+            return;
+          }
+        };
+
+        document.addEventListener('keydown', handleKeyPress);
+        return () => document.removeEventListener('keydown', handleKeyPress);
+      }, [editMode, showAnnotationForm, annotationForm]);
+
+      // Annotation management functions
+      const createAnnotation = () => {
+        if (!selectionInfo || !annotationForm.note.trim()) return;
+
+        const newAnnotationId = `annotation-${nextAnnotationId}`;
+        const newAnnotation = {
+          note: annotationForm.note,
+          color: annotationForm.color,
+          tags: annotationForm.tags.split(',').map(t => t.trim()).filter(t => t)
+        };
+
+        // Update annotations state
+        const updatedAnnotations = {
+          ...annotations,
+          [newAnnotationId]: newAnnotation
+        };
+        setAnnotations(updatedAnnotations);
+
+        // Update city text with annotation tags
+        if (selectedCity) {
+          const updatedText = insertAnnotationInText(selectedCity.text, selectionInfo, newAnnotationId);
+          const updatedCity = { ...selectedCity, text: updatedText };
+          setSelectedCity(updatedCity);
+
+          // Update in cities array
+          setCities(cities.map(city =>
+            city.id === selectedCity.id ? updatedCity : city
+          ));
+        }
+
+        // Save to localStorage
+        saveAnnotationsToStorage(updatedAnnotations);
+
+        // Reset form
+        setAnnotationForm({ note: '', color: 'blue', tags: '' });
+        setShowAnnotationForm(false);
+        setSelectionInfo(null);
+        setSelectedText('');
+      };
+
+      const insertAnnotationInText = (text, selectionInfo, annotationId) => {
+        // Get the actual selected text from the selection
+        const actualSelectedText = selectionInfo.text;
+        
+        // Create a clean version of the text without annotation markup for position calculation
+        const cleanText = text.replace(/\[annotation-\d+\](.*?)\[\/annotation-\d+\]/g, '$1');
+        
+        // Find the selected text in the clean text
+        const selectionStart = cleanText.indexOf(actualSelectedText);
+        
+        if (selectionStart === -1) {
+          console.error('Could not find selected text in clean text');
+          return text;
+        }
+        
+        const selectionEnd = selectionStart + actualSelectedText.length;
+        
+        // Now we need to map these clean text positions back to the original text with annotations
+        let originalStart = 0;
+        let originalEnd = 0;
+        let cleanPos = 0;
+        let originalPos = 0;
+        
+        // Parse through the original text to find where our clean positions map to
+        while (originalPos < text.length && cleanPos <= selectionEnd) {
+          if (text.substr(originalPos).match(/^\[annotation-\d+\]/)) {
+            // Skip opening annotation tag
+            const match = text.substr(originalPos).match(/^\[annotation-\d+\]/);
+            originalPos += match[0].length;
+          } else if (text.substr(originalPos).match(/^\[\/annotation-\d+\]/)) {
+            // Skip closing annotation tag
+            const match = text.substr(originalPos).match(/^\[\/annotation-\d+\]/);
+            originalPos += match[0].length;
+          } else {
+            // Regular character
+            if (cleanPos === selectionStart) {
+              originalStart = originalPos;
+            }
+            if (cleanPos === selectionEnd) {
+              originalEnd = originalPos;
+              break;
+            }
+            cleanPos++;
+            originalPos++;
+          }
+        }
+        
+        // Handle case where selection goes to the end
+        if (cleanPos === selectionEnd && originalEnd === 0) {
+          originalEnd = originalPos;
+        }
+        
+        // Insert the annotation tags
+        const beforeText = text.substring(0, originalStart);
+        const selectedText = text.substring(originalStart, originalEnd);
+        const afterText = text.substring(originalEnd);
+        
+        return `${beforeText}[${annotationId}]${selectedText}[/${annotationId}]${afterText}`;
+      };
+
+      const saveAnnotationsToStorage = (annotationsData) => {
+        try {
+          localStorage.setItem('invisible-cities-annotations', JSON.stringify(annotationsData));
+        } catch (error) {
+          console.error('Failed to save annotations to localStorage:', error);
+        }
+      };
+
+      const loadAnnotationsFromStorage = () => {
+        try {
+          const stored = localStorage.getItem('invisible-cities-annotations');
+          return stored ? JSON.parse(stored) : {};
+        } catch (error) {
+          console.error('Failed to load annotations from localStorage:', error);
+          return {};
+        }
+      };
+
+      const exportAnnotations = () => {
+        const exportData = {
+          cities: cities,
+          annotations: annotations
+        };
+        
+        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'cities_with_annotations.json';
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      // Admin functions
+      const checkAdminPassword = (password) => {
+        // Simple password check - in production you'd want something more secure
+        return password === 'invisible-cities-admin';
+      };
+
+      const handleAdminLogin = () => {
+        if (checkAdminPassword(adminPassword)) {
+          setAdminMode(true);
+          setShowAdminLogin(false);
+          setAdminPassword('');
+        } else {
+          alert('Incorrect password');
+        }
+      };
+
+      const generateUpdatedJSON = () => {
+        const updatedData = {
+          cities: cities,
+          annotations: annotations
+        };
+        return JSON.stringify(updatedData, null, 2);
+      };
+
+      const copyJSONToClipboard = async () => {
+        try {
+          await navigator.clipboard.writeText(generateUpdatedJSON());
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        } catch (err) {
+          console.error('Failed to copy:', err);
+          // Fallback for older browsers
+          const textArea = document.createElement('textarea');
+          textArea.value = generateUpdatedJSON();
+          document.body.appendChild(textArea);
+          textArea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textArea);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        }
+      };
+
+      const downloadUpdatedJSON = () => {
+        const updatedData = generateUpdatedJSON();
+        const blob = new Blob([updatedData], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'cities.json';
+        a.click();
+        URL.revokeObjectURL(url);
+      };
 
       const filteredCities = useMemo(() => {
         return cities.filter(city =>
@@ -313,24 +644,73 @@
             {/* header */}
             <div className="mb-6 sm:mb-8 flex justify-between items-start">
               <div>
-                <h1 className="text-2xl sm:text-3xl font-light text-gray-900 mb-2">invisible cities</h1>
+                <a href="/"><h1 className="text-2xl sm:text-3xl font-light text-gray-900 mb-2">invisible cities</h1></a>
                 <p className="text-gray-600 font-light">italo calvino</p>
               </div>
-              <div className="flex gap-6">
-                <a 
-                  href="overview.html" 
+              <div className="flex gap-4 items-center">
+                {/* Edit Mode Toggle */}
+                <button
+                  onClick={() => setEditMode(!editMode)}
+                  className={`text-md text-gray-600 hover:text-gray-900 transition-colors pt-1 transition-colors ${
+                    editMode
+                      ? 'text-blue-800'
+                      : 'text-gray-600 hover:text-gray-200'
+                  }`}
+                >
+                  {editMode ? '✏️ annotating' : 'annotate'}
+                </button>
+                
+                {/* Export Button - only show when in edit mode */}
+                {editMode && (
+                  <button
+                    onClick={exportAnnotations}
+                    className="text-md text-gray-600 transition-colors pt-1 hover:text-green-800 transition-colors"
+                  >
+                    📄 export
+                  </button>
+                )}
+
+                {/* Admin Button - only show when in edit mode */}
+                {editMode && (
+                  <button
+                    onClick={() => adminMode ? setShowUpdatePreview(true) : setShowAdminLogin(true)}
+                    className={`text-md text-gray-600 hover:text-gray-900 pt-1 transition-colors ${
+                      adminMode
+                        ? 'text-purple-800 hover:text-purple-200'
+                        : 'text-yellow-800 hover:text-yellow-200'
+                    }`}
+                  >
+                    {adminMode ? '🔧 Update JSON' : '🔐'}
+                  </button>
+                )}
+                
+                <a
+                  href="overview.html"
                   className="text-md text-gray-600 hover:text-gray-900 transition-colors pt-1"
                 >
                   overview
                 </a>
-                <a 
-                  href="about.html" 
+                <a
+                  href="about.html"
                   className="text-md text-gray-600 hover:text-gray-900 transition-colors pt-1"
                 >
                   about
                 </a>
               </div>
             </div>
+
+            {/* Edit Mode Instructions */}
+            {editMode && (
+              <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-sm text-blue-800 mb-2">
+                  📝 <strong>Annotation Mode:</strong> Select any text in the city description to add annotations.
+                  Your annotations are automatically saved to browser storage.
+                </p>
+                <div className="text-xs text-blue-600">
+                  <strong>Shortcuts:</strong> Ctrl+Shift+H (toggle mode) • Escape (cancel) • Ctrl+Enter (submit annotation)
+                </div>
+              </div>
+            )}
 
             {/* mobile menu button */}
             {isMobile && (
@@ -394,7 +774,11 @@
                     </div>
 
                     <div className="prose max-w-none">
-                      <div className="city-text">
+                      <div
+                        ref={textContainerRef}
+                        className={`city-text ${editMode ? 'select-text cursor-text' : ''}`}
+                        style={{ userSelect: editMode ? 'text' : 'auto' }}
+                      >
                         {renderAnnotatedText(selectedCity.text)}
                       </div>
                     </div>
@@ -430,6 +814,189 @@
                 )}
               </div>
             </div>
+            
+            {/* Annotation Form Popup */}
+            {showAnnotationForm && selectionInfo && (
+              <div
+                className="annotation-form fixed z-50 bg-white border border-gray-300 rounded-lg shadow-lg p-4"
+                style={{
+                  left: `${Math.min(selectionInfo.position.x - 150, window.innerWidth - 320)}px`,
+                  top: `${Math.max(selectionInfo.position.y - 10, 10)}px`,
+                  width: '300px',
+                  maxHeight: '400px',
+                  overflowY: 'auto'
+                }}
+              >
+                <div className="mb-3">
+                  <h3 className="text-sm font-medium text-gray-900 mb-2">
+                    Add Annotation
+                  </h3>
+                  <p className="text-xs text-gray-600 mb-2">
+                    "{selectedText.length > 50 ? selectedText.substring(0, 50) + '...' : selectedText}"
+                  </p>
+                </div>
+                
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Note
+                    </label>
+                    <textarea
+                      value={annotationForm.note}
+                      onChange={(e) => setAnnotationForm({...annotationForm, note: e.target.value})}
+                      placeholder="Your analysis or observation... (required)"
+                      className="w-full p-2 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      rows={3}
+                      autoFocus
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Color
+                    </label>
+                    <div className="flex gap-1 flex-wrap">
+                      {['blue', 'purple', 'orange', 'green', 'red', 'yellow', 'pink', 'indigo', 'cyan', 'gray'].map(color => (
+                        <button
+                          key={color}
+                          onClick={() => setAnnotationForm({...annotationForm, color})}
+                          className={`w-5 h-5 rounded border-2 ${
+                            annotationForm.color === color ? 'border-gray-800' : 'border-gray-300'
+                          } bg-${color}-200 hover:border-gray-600 transition-colors`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Tags (comma separated)
+                    </label>
+                    <input
+                      type="text"
+                      value={annotationForm.tags}
+                      onChange={(e) => setAnnotationForm({...annotationForm, tags: e.target.value})}
+                      placeholder="perception, semiotics, duality"
+                      className="w-full p-2 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    />
+                  </div>
+                  
+                  <div className="flex gap-2 pt-2">
+                    <button
+                      onClick={createAnnotation}
+                      disabled={!annotationForm.note.trim()}
+                      className="flex-1 px-3 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+                    >
+                      Add Annotation
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowAnnotationForm(false);
+                        setSelectionInfo(null);
+                        setSelectedText('');
+                        setAnnotationForm({ note: '', color: 'blue', tags: '' });
+                      }}
+                      className="px-3 py-2 bg-gray-200 text-gray-700 text-sm rounded hover:bg-gray-300 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Admin Login Modal */}
+            {showAdminLogin && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                <div className="bg-white rounded-lg p-6 w-96 max-w-90vw">
+                  <h2 className="text-lg font-medium text-gray-900 mb-4">Admin Access</h2>
+                  <p className="text-sm text-gray-600 mb-4">
+                    Enter the admin password to access JSON update features.
+                  </p>
+                  <input
+                    type="password"
+                    value={adminPassword}
+                    onChange={(e) => setAdminPassword(e.target.value)}
+                    placeholder="Enter admin password"
+                    className="w-full p-3 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-4"
+                    onKeyPress={(e) => e.key === 'Enter' && handleAdminLogin()}
+                    autoFocus
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleAdminLogin}
+                      className="flex-1 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                    >
+                      Login
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowAdminLogin(false);
+                        setAdminPassword('');
+                      }}
+                      className="px-4 py-2 bg-gray-300 text-gray-700 rounded hover:bg-gray-400 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* JSON Update Preview Modal */}
+            {showUpdatePreview && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-lg w-full max-w-4xl max-h-90vh flex flex-col">
+                  <div className="p-6 border-b border-gray-200">
+                    <h2 className="text-lg font-medium text-gray-900 mb-2">Update cities.json</h2>
+                    <p className="text-sm text-gray-600">
+                      Copy this JSON and replace your current cities.json file, or download it directly.
+                    </p>
+                  </div>
+                  
+                  <div className="flex-1 p-6 overflow-hidden">
+                    <div className="h-full">
+                      <textarea
+                        value={generateUpdatedJSON()}
+                        readOnly
+                        className="w-full h-full p-3 bg-gray-50 border border-gray-300 rounded font-mono text-sm resize-none"
+                        style={{ minHeight: '400px' }}
+                      />
+                    </div>
+                  </div>
+                  
+                  <div className="p-6 border-t border-gray-200 bg-gray-50">
+                    <div className="flex gap-2 flex-wrap">
+                      <button
+                        onClick={copyJSONToClipboard}
+                        className={`px-4 py-2 rounded transition-colors ${
+                          copied
+                            ? 'bg-green-100 text-green-800'
+                            : 'bg-blue-100 text-blue-800 hover:bg-blue-200'
+                        }`}
+                      >
+                        {copied ? '✅ Copied!' : '📋 Copy JSON'}
+                      </button>
+                      <button
+                        onClick={downloadUpdatedJSON}
+                        className="px-4 py-2 bg-purple-100 text-purple-800 hover:bg-purple-200 rounded transition-colors"
+                      >
+                        💾 Download cities.json
+                      </button>
+                      <button
+                        onClick={() => setShowUpdatePreview(false)}
+                        className="px-4 py-2 bg-gray-300 text-gray-700 hover:bg-gray-400 rounded transition-colors ml-auto"
+                      >
+                        Close
+                      </button>
+                    </div>
+                    <div className="mt-3 text-xs text-gray-500">
+                      <strong>Instructions:</strong> After copying or downloading, replace your original cities.json file with this updated version to make your annotations permanent.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       );
