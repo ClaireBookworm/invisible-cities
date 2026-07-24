@@ -1,15 +1,8 @@
 {
-  "dependencies": {
-    "react": "^19.1.1"
-  },
   "name": "invisible-cities",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "devDependencies": {},
-  "scripts": {
-    "test": "npm run"
-  },
+  "description": "A digital reading room for Italo Calvino's Invisible Cities. Static site — React is loaded from a CDN, so there is no build step.",
+  "private": true,
   "author": "clairebookworm",
   "license": "ISC"
 }

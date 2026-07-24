@@ -1,1 +1,7 @@
 node_modules*
+
+# Supabase edge-function secrets — never commit
+supabase/functions/.env
+supabase/.env
+.env
+.env.local

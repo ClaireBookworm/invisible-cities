@@ -4,1031 +4,863 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Invisible Cities</title>
+  <title>Invisible Cities — Italo Calvino</title>
   <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="style.css">
+  <!-- Supabase client for shared reader notes (optional — the app works without it). -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&display=swap" rel="stylesheet" />
+  <style>
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0}
+    body{background:#f1ebdd;color:#2b2620;font-family:'EB Garamond',Georgia,serif;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+    /* faint paper grain */
+    body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:9998;opacity:.30;mix-blend-mode:multiply;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+    ::selection{background:rgba(58,74,110,.16)}
+    ::-webkit-scrollbar{width:10px;height:10px}
+    ::-webkit-scrollbar-thumb{background:#d8ccb4}
+    ::-webkit-scrollbar-track{background:transparent}
+    input,textarea{font-family:inherit}
+    a{color:#3a4a6e}
+    @keyframes ic-fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  </style>
 </head>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400..800;1,400..800&display=swap');
-  
-  /* Smooth tooltip transitions */
-  .annotation-tooltip {
-    opacity: 0;
-    transform: translateY(10px);
-    transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out;
-  }
-  
-  .annotation-tooltip.show {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  
-  /* Annotation mode styles */
-  .select-text {
-    -webkit-user-select: text;
-    -moz-user-select: text;
-    -ms-user-select: text;
-    user-select: text;
-  }
-  
-  .select-text::selection {
-    background-color: rgba(59, 130, 246, 0.3);
-    color: inherit;
-  }
-  
-  .select-text::-moz-selection {
-    background-color: rgba(59, 130, 246, 0.3);
-    color: inherit;
-  }
-  
-  /* Animation for annotation form */
-  .annotation-form {
-    animation: fadeInUp 0.2s ease-out;
-  }
-  
-  @keyframes fadeInUp {
-    from {
-      opacity: 0;
-      transform: translateY(10px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-</style>
 
 <body>
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useMemo, useEffect, useRef } = React;
+    // ============================================================================
+    // Invisible Cities — a papery reading room.
+    // Ported from the design-review build. Content lives in cities.json; this file
+    // is only the reading interface. Appearance controls live in CONFIG below.
+    // ============================================================================
 
-    const InvisibleCitiesExplorer = () => {
-      const [selectedCity, setSelectedCity] = useState(null);
-      const [searchTerm, setSearchTerm] = useState('');
-      const [annotations, setAnnotations] = useState({});
-      const [hoveredAnnotation, setHoveredAnnotation] = useState(null);
-      const [cities, setCities] = useState([]);
-      const [loading, setLoading] = useState(true);
-      const [hoverTimer, setHoverTimer] = useState(null);
-      const [sidebarOpen, setSidebarOpen] = useState(false);
-      const [isMobile, setIsMobile] = useState(false);
-      const [cursorPosition, setCursorPosition] = useState({ x: 0, y: 0 });
-      const [tooltipVisible, setTooltipVisible] = useState(false);
-      const [tooltipLocked, setTooltipLocked] = useState(false);
-      const [lockedPosition, setLockedPosition] = useState(null);
-      const annotationRef = useRef(null);
-      
-      // New annotation editing states
-      const [editMode, setEditMode] = useState(false);
-      const [showAnnotationForm, setShowAnnotationForm] = useState(false);
-      const [selectedText, setSelectedText] = useState('');
-      const [selectionInfo, setSelectionInfo] = useState(null);
-      const [annotationForm, setAnnotationForm] = useState({
-        note: '',
-        color: 'blue',
-        tags: ''
+    const CONFIG = {
+      accentColor: '#3a4a6e', // indigo blue
+      paperTone: 'Ivory',     // Ivory | Sand | Parchment
+      showFolios: true,
+      startView: 'read'       // read | overview
+    };
+
+    // ---------------------------------------------------------------------------
+    // Shared reader notes (Supabase). Paste your project URL + anon/public key to
+    // turn on public annotations. Leave blank and the app falls back to storing
+    // notes in this browser only (localStorage) — the whole site still works.
+    //
+    // The anon key is SAFE to ship in the client: row-level security is what
+    // protects the table. See SUPABASE.md for the exact SQL to run.
+    // ---------------------------------------------------------------------------
+    const SUPABASE_URL = 'https://tteijgqvqmxfgyrqtybb.supabase.co';
+    const SUPABASE_ANON_KEY = 'sb_publishable_P8DGrxxyutW1wRm6qK45Ig_dYgX9d53'; // publishable key — safe to ship
+
+    // Recommended: a Supabase Edge Function that moderates a note server-side
+    // (free OpenAI check + word filter, API key kept secret) and inserts it with
+    // the service role. When set, note submission goes through here — which is the
+    // only way moderation can't be bypassed. Leave blank to insert directly with
+    // the publishable key instead (client word filter only). See SUPABASE.md.
+    // If you named the function something other than 'submit-note', edit the tail.
+    const SUBMIT_ENDPOINT = SUPABASE_URL ? SUPABASE_URL + '/functions/v1/submit-note' : '';
+
+    const supa = (SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase)
+      ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+      : null;
+
+    // Built-in hygiene: length cap + a small blocklist. Instant, no key required.
+    const MAX_NOTE_LEN = 600;
+    const BLOCKLIST = [
+      'fuck', 'shit', 'bitch', 'cunt', 'asshole', 'dick', 'nigger', 'nigga',
+      'faggot', 'retard', 'whore', 'slut', 'rape', 'kike', 'spic', 'chink'
+    ];
+    // Returns an error string if the note should be rejected, or null if it's clean.
+    function screenNote(text) {
+      const t = (text || '').trim();
+      if (t.length < 2) return 'Please write a little more.';
+      if (t.length > MAX_NOTE_LEN) return `Please keep notes under ${MAX_NOTE_LEN} characters.`;
+      const words = ' ' + t.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ') + ' ';
+      for (const w of BLOCKLIST) { if (words.includes(' ' + w + ' ')) return 'That note tripped the language filter.'; }
+      return null;
+    }
+    // Submit a note through the edge function: it moderates, then inserts as the
+    // service role. Returns { ok, reason, row }. `row` is the created note record.
+    async function submitNote(payload) {
+      const res = await fetch(SUBMIT_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY },
+        body: JSON.stringify(payload)
       });
-      const [nextAnnotationId, setNextAnnotationId] = useState(1);
-      const textContainerRef = useRef(null);
-      
-      // Admin mode states
-      const [adminMode, setAdminMode] = useState(false);
-      const [showAdminLogin, setShowAdminLogin] = useState(false);
-      const [adminPassword, setAdminPassword] = useState('');
-      const [showUpdatePreview, setShowUpdatePreview] = useState(false);
-      const [copied, setCopied] = useState(false);
+      let data = {};
+      try { data = await res.json(); } catch (e) {}
+      if (!res.ok || data.allowed === false) {
+        return { ok: false, reason: data.reason || 'This note was flagged by moderation.' };
+      }
+      return { ok: true, row: data.note || null };
+    }
 
-      // Check if mobile on mount and resize
-      useEffect(() => {
-        const checkMobile = () => {
-          setIsMobile(window.innerWidth < 768);
-          if (window.innerWidth >= 768) {
-            setSidebarOpen(false);
-          }
+    class InvisibleCities extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = {
+          loading: true, cities: [], interludes: [], categoryOrder: [], annotations: {}, overrides: {},
+          view: 'read', selType: 'city', selId: null, mode: 'linear', search: '',
+          annotating: false, activeAnn: null, showAuthor: true, showReaders: true, activeTag: null,
+          showInterludes: true, sel: null, composerNote: '', composerTags: '', composerAuthor: '', ovHover: null,
+          indexOpen: false, narrow: (typeof window !== 'undefined' && window.innerWidth < 900),
+          noteError: null, noteBusy: false, remoteReady: false
         };
-        
-        checkMobile();
-        window.addEventListener('resize', checkMobile);
-        return () => window.removeEventListener('resize', checkMobile);
-      }, []);
+        this.config = CONFIG;
+        this.readingRef = React.createRef();
+      }
 
-      const getCityIdFromUrl = () => {
-        const urlParams = new URLSearchParams(window.location.search);
-        return urlParams.get('city');
-      };
+      // ---- lifecycle ----
+      componentDidMount() {
+        this._mu = (e) => this.onMouseUp(e);
+        document.addEventListener('mouseup', this._mu);
+        this._rs = () => this.setState({ narrow: window.innerWidth < 900 });
+        window.addEventListener('resize', this._rs);
+        this._pop = () => this.applyUrl();
+        window.addEventListener('popstate', this._pop);
 
-      const updateUrl = (cityId) => {
-        const params = new URLSearchParams(window.location.search);
-        if (params.get('city') !== cityId) {
-          params.set('city', cityId);
-          window.history.pushState({ cityId }, '', `?${params.toString()}`);
-        }
-      };
-
-      useEffect(() => {
-        const handlePopState = (event) => {
-          const cityId = event.state?.cityId || getCityIdFromUrl();
-          if (cityId && cities.length > 0) {
-            const targetCity = cities.find(city => city.id === cityId);
-            if (targetCity) {
-              setSelectedCity(targetCity);
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-          }
-        };
-
-        window.addEventListener('popstate', handlePopState);
-        return () => window.removeEventListener('popstate', handlePopState);
-      }, [cities]);
-
-      // load cities from json file
-      useEffect(() => {
-        fetch('./cities.json')
-          .then(response => response.json())
-          .then(data => {
-            setCities(data.cities);
-            
-            // Merge file annotations with localStorage annotations
-            const fileAnnotations = data.annotations || {};
-            const storedAnnotations = loadAnnotationsFromStorage();
-            const mergedAnnotations = { ...fileAnnotations, ...storedAnnotations };
-            setAnnotations(mergedAnnotations);
-            
-            const cityId = getCityIdFromUrl();
-
-            if (cityId && data.cities.length > 0) {
-              const targetCity = data.cities.find(city => city.id === cityId);
-              if (targetCity) {
-                setSelectedCity(targetCity);
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              } else {
-                setSelectedCity(data.cities[0]);
-              }
-            } else if (data.cities.length > 0) {
-              setSelectedCity(data.cities[0]);
-            }
-            
-            setLoading(false);
-          })
-          .catch(error => {
-            console.error('failed to load cities:', error);
-            // fallback to placeholder data
-            const fallbackCities = [
-              {
-                id: "isidora",
-                name: "Isidora",
-                category: "Cities & Desire",
-                text: "When a man rides a long time through wild regions he feels the desire for a city. Finally he comes to Isidora, a city where the buildings have spiral staircases encrusted with spiral seashells, where perfect telescopes and violins are made, where the foreigner hesitating between two women always encounters a third, where cockfights degenerate into bloody brawls among the bettors. He was thinking of all these things when he desired a city. Isidora, therefore, is the city of his dreams: with one difference. The dreamed-of city contained him as a young man; he arrives at Isidora in his old age. In the square there is the wall where the old men sit and watch the young go by; he is seated in a row with them. Desires are already memories.",
-                image: "https://images.unsplash.com/photo-1464983953574-0892a716854b?w=400&h=300&fit=crop",
-                tags: ["desire", "architecture", "music"]
-              }
-            ];
-            setCities(fallbackCities);
-            setAnnotations({
-              'annotation-1': {
-                note: 'calvino often uses metal and stone as contrasting elements - the organic copper against geometric stone',
-                color: 'blue',
-                tags: ['materials', 'contrast']
-              },
-              'annotation-2': {
-                note: 'classic calvino move - the eye/sight as active agent in meaning-making',
-                color: 'purple',
-                tags: ['perception', 'semiotics']
-              }
-            });
-            if (fallbackCities.length > 0) {
-              setSelectedCity(fallbackCities[0]);
-            }
-            setLoading(false);
+        fetch('./cities.json').then(r => r.json()).then(async data => {
+          const anns = {};
+          Object.entries(data.annotations || {}).forEach(([k, v]) => {
+            anns[k] = { ...v, scope: v.scope || 'author', author: v.author || 'Claire' };
           });
-      }, []);
+          const cities = (data.cities || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+          let overrides = {};
 
-      // Text selection handling for annotations
-      useEffect(() => {
-        const handleSelection = () => {
-          if (!editMode || !textContainerRef.current) return;
-          
-          const selection = window.getSelection();
-          if (selection.rangeCount > 0 && !selection.isCollapsed) {
-            const range = selection.getRangeAt(0);
-            const selectedText = selection.toString().trim();
-            
-            if (selectedText.length > 0 && textContainerRef.current.contains(range.commonAncestorContainer)) {
-              const rect = range.getBoundingClientRect();
-              setSelectedText(selectedText);
-              setSelectionInfo({
-                text: selectedText,
-                range: range.cloneRange(),
-                position: {
-                  x: rect.left + rect.width / 2,
-                  y: rect.top - 10
-                }
-              });
-              setShowAnnotationForm(true);
-            }
-          }
-        };
-
-        const handleClickOutside = (e) => {
-          if (showAnnotationForm && !e.target.closest('.annotation-form')) {
-            setShowAnnotationForm(false);
-            setSelectionInfo(null);
-            setSelectedText('');
-          }
-        };
-
-        if (editMode) {
-          document.addEventListener('mouseup', handleSelection);
-          document.addEventListener('click', handleClickOutside);
-        }
-
-        return () => {
-          document.removeEventListener('mouseup', handleSelection);
-          document.removeEventListener('click', handleClickOutside);
-        };
-      }, [editMode, showAnnotationForm]);
-
-      // Calculate next annotation ID when annotations change
-      useEffect(() => {
-        const existingIds = Object.keys(annotations);
-        const maxId = existingIds.length > 0
-          ? Math.max(...existingIds.map(id => parseInt(id.replace('annotation-', ''))))
-          : 0;
-        setNextAnnotationId(maxId + 1);
-      }, [annotations]);
-
-      // Keyboard shortcuts
-      useEffect(() => {
-        const handleKeyPress = (e) => {
-          // Ctrl/Cmd + shift + H to toggle annotation mode
-            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'h') {
-            e.preventDefault();
-            setEditMode(!editMode);
-            return;
-            }
-
-          // Escape to cancel annotation form
-          if (e.key === 'Escape' && showAnnotationForm) {
-            setShowAnnotationForm(false);
-            setSelectionInfo(null);
-            setSelectedText('');
-            setAnnotationForm({ note: '', color: 'blue', tags: '' });
-            return;
-          }
-
-          // Enter to submit annotation (when form is open and note is filled)
-          if (e.key === 'Enter' && e.ctrlKey && showAnnotationForm && annotationForm.note.trim()) {
-            e.preventDefault();
-            createAnnotation();
-            return;
-          }
-        };
-
-        document.addEventListener('keydown', handleKeyPress);
-        return () => document.removeEventListener('keydown', handleKeyPress);
-      }, [editMode, showAnnotationForm, annotationForm]);
-
-      // Annotation management functions
-      const createAnnotation = () => {
-        if (!selectionInfo || !annotationForm.note.trim()) return;
-
-        const newAnnotationId = `annotation-${nextAnnotationId}`;
-        const newAnnotation = {
-          note: annotationForm.note,
-          color: annotationForm.color,
-          tags: annotationForm.tags.split(',').map(t => t.trim()).filter(t => t)
-        };
-
-        // Update annotations state
-        const updatedAnnotations = {
-          ...annotations,
-          [newAnnotationId]: newAnnotation
-        };
-        setAnnotations(updatedAnnotations);
-
-        // Update city text with annotation tags
-        if (selectedCity) {
-          const updatedText = insertAnnotationInText(selectedCity.text, selectionInfo, newAnnotationId);
-          const updatedCity = { ...selectedCity, text: updatedText };
-          setSelectedCity(updatedCity);
-
-          // Update in cities array
-          setCities(cities.map(city =>
-            city.id === selectedCity.id ? updatedCity : city
-          ));
-        }
-
-        // Save to localStorage
-        saveAnnotationsToStorage(updatedAnnotations);
-
-        // Reset form
-        setAnnotationForm({ note: '', color: 'blue', tags: '' });
-        setShowAnnotationForm(false);
-        setSelectionInfo(null);
-        setSelectedText('');
-      };
-
-      const insertAnnotationInText = (text, selectionInfo, annotationId) => {
-        // Get the actual selected text from the selection
-        const actualSelectedText = selectionInfo.text;
-        
-        // Create a clean version of the text without annotation markup for position calculation
-        const cleanText = text.replace(/\[annotation-\d+\](.*?)\[\/annotation-\d+\]/g, '$1');
-        
-        // Find the selected text in the clean text
-        const selectionStart = cleanText.indexOf(actualSelectedText);
-        
-        if (selectionStart === -1) {
-          console.error('Could not find selected text in clean text');
-          return text;
-        }
-        
-        const selectionEnd = selectionStart + actualSelectedText.length;
-        
-        // Now we need to map these clean text positions back to the original text with annotations
-        let originalStart = 0;
-        let originalEnd = 0;
-        let cleanPos = 0;
-        let originalPos = 0;
-        
-        // Parse through the original text to find where our clean positions map to
-        while (originalPos < text.length && cleanPos <= selectionEnd) {
-          if (text.substr(originalPos).match(/^\[annotation-\d+\]/)) {
-            // Skip opening annotation tag
-            const match = text.substr(originalPos).match(/^\[annotation-\d+\]/);
-            originalPos += match[0].length;
-          } else if (text.substr(originalPos).match(/^\[\/annotation-\d+\]/)) {
-            // Skip closing annotation tag
-            const match = text.substr(originalPos).match(/^\[\/annotation-\d+\]/);
-            originalPos += match[0].length;
+          if (supa) {
+            // Shared notes are the source of truth: pull every approved community note.
+            try {
+              const { data: rows, error } = await supa.from('notes').select().eq('status', 'approved');
+              if (error) throw error;
+              overrides = this.mergeRemoteNotes(cities, anns, rows || []);
+            } catch (e) { console.error('failed to load shared notes:', e); }
           } else {
-            // Regular character
-            if (cleanPos === selectionStart) {
-              originalStart = originalPos;
-            }
-            if (cleanPos === selectionEnd) {
-              originalEnd = originalPos;
-              break;
-            }
-            cleanPos++;
-            originalPos++;
+            // Local-only fallback: this browser's drafted notes, from localStorage.
+            try { overrides = JSON.parse(localStorage.getItem('ic-overrides') || '{}'); } catch (e) {}
+            let notes = {};
+            try { notes = JSON.parse(localStorage.getItem('ic-notes') || '{}'); } catch (e) {}
+            Object.assign(anns, notes);
           }
-        }
-        
-        // Handle case where selection goes to the end
-        if (cleanPos === selectionEnd && originalEnd === 0) {
-          originalEnd = originalPos;
-        }
-        
-        // Insert the annotation tags
-        const beforeText = text.substring(0, originalStart);
-        const selectedText = text.substring(originalStart, originalEnd);
-        const afterText = text.substring(originalEnd);
-        
-        return `${beforeText}[${annotationId}]${selectedText}[/${annotationId}]${afterText}`;
-      };
 
-      const saveAnnotationsToStorage = (annotationsData) => {
-        try {
-          localStorage.setItem('invisible-cities-annotations', JSON.stringify(annotationsData));
-        } catch (error) {
-          console.error('Failed to save annotations to localStorage:', error);
-        }
-      };
+          // initial view / selection from URL (?view=, ?city=)
+          const params = new URLSearchParams(window.location.search);
+          const urlView = params.get('view');
+          const urlCity = params.get('city');
+          let view = (this.config.startView === 'overview') ? 'overview' : 'read';
+          if (urlView === 'overview' || urlView === 'about' || urlView === 'read') view = urlView;
+          let selId = cities.length ? cities[0].id : null;
+          if (urlCity && cities.some(c => c.id === urlCity)) { selId = urlCity; view = 'read'; }
 
-      const loadAnnotationsFromStorage = () => {
-        try {
-          const stored = localStorage.getItem('invisible-cities-annotations');
-          return stored ? JSON.parse(stored) : {};
-        } catch (error) {
-          console.error('Failed to load annotations from localStorage:', error);
-          return {};
-        }
-      };
+          this.setState({
+            loading: false, cities, annotations: anns, overrides, remoteReady: !!supa,
+            interludes: data.interludes || [], categoryOrder: data.categoryOrder || [],
+            view, selType: 'city', selId
+          });
+        }).catch(err => { console.error(err); this.setState({ loading: false }); });
+      }
 
-      const exportAnnotations = () => {
-        const exportData = {
-          cities: cities,
-          annotations: annotations
-        };
-        
-        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'cities_with_annotations.json';
-        a.click();
-        URL.revokeObjectURL(url);
-      };
-
-      // Admin functions
-      const checkAdminPassword = (password) => {
-        // Simple password check - in production you'd want something more secure
-        return password === 'invisible-cities-admin';
-      };
-
-      const handleAdminLogin = () => {
-        if (checkAdminPassword(adminPassword)) {
-          setAdminMode(true);
-          setShowAdminLogin(false);
-          setAdminPassword('');
-        } else {
-          alert('Incorrect password');
-        }
-      };
-
-      const generateUpdatedJSON = () => {
-        const updatedData = {
-          cities: cities,
-          annotations: annotations
-        };
-        return JSON.stringify(updatedData, null, 2);
-      };
-
-      const copyJSONToClipboard = async () => {
-        try {
-          await navigator.clipboard.writeText(generateUpdatedJSON());
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        } catch (err) {
-          console.error('Failed to copy:', err);
-          // Fallback for older browsers
-          const textArea = document.createElement('textarea');
-          textArea.value = generateUpdatedJSON();
-          document.body.appendChild(textArea);
-          textArea.select();
-          document.execCommand('copy');
-          document.body.removeChild(textArea);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        }
-      };
-
-      const downloadUpdatedJSON = () => {
-        const updatedData = generateUpdatedJSON();
-        const blob = new Blob([updatedData], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'cities.json';
-        a.click();
-        URL.revokeObjectURL(url);
-      };
-
-      const filteredCities = useMemo(() => {
-        return cities.filter(city =>
-          city.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          city.category.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          city.tags.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()))
-        );
-      }, [searchTerm, cities]);
-
-      // Calculate tooltip position based on cursor position
-      const getTooltipPosition = (cursorX, cursorY) => {
-        const viewportWidth = window.innerWidth;
-        const viewportHeight = window.innerHeight;
-        const tooltipWidth = isMobile ? 280 : 400;
-        const tooltipHeight = 120; // approximate height
-        const margin = 20;
-        
-        let left = cursorX - (tooltipWidth / 2); // center tooltip on cursor
-        let top = cursorY - tooltipHeight - 35; // position above cursor with more space
-        
-        // Check if tooltip would go off the right edge
-        if (left + tooltipWidth + margin > viewportWidth) {
-          left = viewportWidth - tooltipWidth - margin;
-        }
-        
-        // Check if tooltip would go off the left edge
-        if (left < margin) {
-          left = margin;
-        }
-        
-        // Check if tooltip would go off the top edge
-        if (top < margin) {
-          top = cursorY + 40; // position below cursor with increased gap
-        }
-        
-        // Check if tooltip would go off the bottom edge when positioned below
-        if (top + tooltipHeight + margin > viewportHeight) {
-          top = viewportHeight - tooltipHeight - margin;
-        }
-        
-        return { 
-          left: `${left}px`, 
-          top: `${top}px`,
-          position: 'fixed'
-        };
-      };
-
-      const renderMarkdown = (text) => {
-        // handle newlines and markdown formatting
-        const parts = text.split(/(\n|\*\*.*?\*\*|\*.*?\*)/);
-
-        return parts.map((part, index) => {
-          if (part === '\n') {
-            return <br key={index} />;
-          } else if (part.startsWith('**') && part.endsWith('**')) {
-            return <strong key={index}>{part.slice(2, -2)}</strong>;
-          } else if (part.startsWith('*') && part.endsWith('*')) {
-            return <em key={index}>{part.slice(1, -1)}</em>;
-          } else if (part.match(/\[.*?\]\(.*?\)/)) {
-            const linkMatch = part.match(/\[(.*?)\]\((.*?)\)/);
-            if (linkMatch) {
-              return (
-                <a
-                  key={index}
-                  href={linkMatch[2]}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 hover:text-blue-800 underline"
-                >
-                  {linkMatch[1]}
-                </a>
-              );
-            }
-          }
-          return part;
+      // Weave a set of Supabase note rows into the annotations map + per-city text
+      // overrides, reusing the same anchor-and-wrap logic as local notes. Returns
+      // the overrides map; mutates `anns` in place. Rows whose anchor phrase can no
+      // longer be found in the text are skipped (they simply don't appear).
+      mergeRemoteNotes(cities, anns, rows) {
+        const byId = {}; cities.forEach(c => { byId[c.id] = c; });
+        const existing = Object.keys(anns).map(k => parseInt(k.replace('annotation-', '')) || 0);
+        let next = (existing.length ? Math.max(...existing) : 0) + 1;
+        const overrides = {};
+        rows.forEach(row => {
+          const city = byId[row.city_id]; if (!city) return;
+          const base = overrides[city.id] != null ? overrides[city.id] : city.text;
+          const id = 'annotation-' + next;
+          const woven = this.insertAnn(base, row.anchor, id);
+          if (woven === base) return; // anchor not found — skip silently
+          next++;
+          overrides[city.id] = woven;
+          anns[id] = {
+            note: row.note, color: 'gray', tags: row.tags || [],
+            scope: 'community', author: row.author || 'reader', remoteId: row.id
+          };
         });
-      };
+        return overrides;
+      }
+      componentWillUnmount() {
+        document.removeEventListener('mouseup', this._mu);
+        window.removeEventListener('resize', this._rs);
+        window.removeEventListener('popstate', this._pop);
+      }
 
-      const renderAnnotatedText = (text) => {
-        return text.split(/(\[annotation-\d+\].*?\[\/annotation-\d+\])/).map((part, index) => {
-          const match = part.match(/\[annotation-(\d+)\](.*?)\[\/annotation-\d+\]/);
-          if (match) {
-            const annotationId = `annotation-${match[1]}`;
-            const content = match[2];
-            const annotation = annotations[annotationId];
+      // ---- url helpers ----
+      applyUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const city = params.get('city');
+        const view = params.get('view');
+        if (city && this.state.cities.some(c => c.id === city)) {
+          this.setState({ view: 'read', selType: 'city', selId: city, activeAnn: null, sel: null });
+        } else if (view === 'overview' || view === 'about' || view === 'read') {
+          this.setState({ view });
+        }
+      }
+      pushCityUrl(id) {
+        const params = new URLSearchParams(window.location.search);
+        params.delete('view');
+        if (params.get('city') !== id) {
+          params.set('city', id);
+          window.history.pushState({ city: id }, '', `?${params.toString()}`);
+        }
+      }
+      pushViewUrl(view) {
+        const params = new URLSearchParams(window.location.search);
+        params.delete('city');
+        if (view === 'read') params.delete('view'); else params.set('view', view);
+        const qs = params.toString();
+        window.history.pushState({ view }, '', qs ? `?${qs}` : window.location.pathname);
+      }
 
-            return (
-              <span
-                key={index}
-                className={`relative cursor-pointer px-1 rounded transition-all duration-200 ${annotation ? `bg-${annotation.color}-100 hover:bg-${annotation.color}-200 border-l-2 border-${annotation.color}-400` : 'bg-gray-100'
-                  }`}
-                onMouseEnter={(e) => {
-                  if (hoverTimer) clearTimeout(hoverTimer);
-                  setHoveredAnnotation(annotationId);
-                  // Only set position if tooltip isn't already locked
-                  if (!tooltipLocked && hoveredAnnotation !== annotationId) {
-                    const newPosition = { x: e.clientX, y: e.clientY };
-                    setCursorPosition(newPosition);
-                    setLockedPosition(null);
-                  }
-                  // Small delay to trigger the animation
-                  setTimeout(() => setTooltipVisible(true), 10);
-                }}
-                onMouseLeave={() => {
-                  // Don't immediately hide if tooltip is locked
-                  if (!tooltipLocked) {
-                    setTooltipVisible(false);
-                    setLockedPosition(null);
-                    const timer = setTimeout(() => {
-                      setHoveredAnnotation(null);
-                    }, 1000); // 1 second delay
-                    setHoverTimer(timer);
-                  }
-                }}
-              >
-                {renderMarkdown(content)}
-                {hoveredAnnotation === annotationId && annotation && (
-                    <div 
-                      className={`fixed z-10 p-3 bg-white border border-gray-200 rounded-lg shadow-lg annotation-tooltip ${tooltipVisible ? 'show' : ''}`}
-                      style={{
-                        width: isMobile ? '280px' : '400px',
-                        ...getTooltipPosition(
-                          lockedPosition ? lockedPosition.x : cursorPosition.x, 
-                          lockedPosition ? lockedPosition.y : cursorPosition.y
-                        )
-                      }}
-                      onMouseEnter={() => {
-                        if (hoverTimer) clearTimeout(hoverTimer);
-                        setTooltipLocked(true);
-                        // Lock the current position
-                        setLockedPosition({ x: cursorPosition.x, y: cursorPosition.y });
-                      }}
-                      onMouseLeave={() => {
-                        setTooltipLocked(false);
-                        setLockedPosition(null);
-                        setTooltipVisible(false);
-                        const timer = setTimeout(() => {
-                          setHoveredAnnotation(null);
-                        }, 1000); // 1 second delay when leaving tooltip
-                        setHoverTimer(timer);
-                      }}
-                    >
-                      <div className="text-gray-800 mb-2" style={{'font-size': '1.1rem', 'opacity' : '0.85'}}>{renderMarkdown(annotation.note)}</div>
-                      <div className="flex gap-1 flex-wrap">
-                        {annotation.tags.map(tag => (
-                          <span key={tag} className={`px-2 py-1 text-xs rounded bg-${annotation.color}-100 text-${annotation.color}-800`}>
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                )}
-              </span>
-            );
-          }
-          return <span key={index}>{renderMarkdown(part)}</span>;
-        });
-      };
+      // ---- small helpers ----
+      acc() { return this.config.accentColor || '#3a4a6e'; }
+      colorHex(c) {
+        const m = { blue: '#4a5f7a', purple: '#6a5a7a', orange: '#9a6a3a', green: '#5a6e4a', red: '#7a3a30', yellow: '#8a7230', pink: '#8a4a5a', indigo: '#4a4a6e', cyan: '#3a6a6e', gray: '#6a6258', emerald: '#4a6e58' };
+        return m[c] || '#6f6555';
+      }
+      hexA(hex, a) {
+        const n = hex.replace('#', '');
+        const r = parseInt(n.slice(0, 2), 16), g = parseInt(n.slice(2, 4), 16), b = parseInt(n.slice(4, 6), 16);
+        return `rgba(${r},${g},${b},${a})`;
+      }
+      roman(n) { return ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX'][n] || ''; }
+      textOf(city) { return (this.state.overrides[city.id] != null) ? this.state.overrides[city.id] : city.text; }
+      isVisible(ann) {
+        if (!ann) return false;
+        const s = this.state;
+        const bySrc = ann.scope === 'community' ? s.showReaders : s.showAuthor;
+        const byTag = !s.activeTag || (ann.tags || []).includes(s.activeTag);
+        return bySrc && byTag;
+      }
+      clean(t) {
+        return (t || '')
+          .replace(/\[\/?annotation-\d+\]/g, '')
+          .replace(/\*\*(.*?)\*\*/g, '$1')
+          .replace(/\*(.*?)\*/g, '$1')
+          .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+          .replace(/\s+/g, ' ').trim();
+      }
+      genSeed(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+      mulberry(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
 
-      const tagColors = {
-        'memory': 'blue',
-        'architecture': 'green',
-        'light': 'yellow',
-        'signs': 'purple',
-        'nature': 'green',
-        'meaning': 'indigo',
-        'desire': 'red',
-        'perspective': 'pink',
-        'journey': 'orange',
-        'water': 'cyan',
-        'hidden': 'gray',
-        'landscape': 'emerald'
-      };
-
-      if (loading) {
-        return (
-          <div className="min-h-screen bg-white flex items-center justify-center">
-            <div className="text-gray-500">loading cities...</div>
-          </div>
+      // Procedural frontispiece: a seeded constellation of nodes + threads,
+      // echoing Calvino's webs of relationships. Fills the gap where an
+      // illustration is missing, so it reads as intentional, not broken.
+      genPlate(c) {
+        const rand = this.mulberry(this.genSeed(c.id + ':' + ((c.text || '').length)));
+        const W = 400, H = 250, m = 38, ink = '#5b5140', thread = '#c7bb9e';
+        const n = 7 + Math.floor(rand() * 6), pts = [];
+        for (let i = 0; i < n; i++) pts.push({ x: m + rand() * (W - 2 * m), y: m + rand() * (H - 2 * m), r: 2 + rand() * 3 });
+        const ch = [];
+        for (let i = 0; i < n; i++) {
+          let best = -1, bd = 1e9;
+          for (let j = 0; j < n; j++) { if (i === j) continue; const d = (pts[i].x - pts[j].x) ** 2 + (pts[i].y - pts[j].y) ** 2; if (d < bd) { bd = d; best = j; } }
+          if (best > i) ch.push(React.createElement('line', { key: 'e' + i, x1: pts[i].x, y1: pts[i].y, x2: pts[best].x, y2: pts[best].y, stroke: thread, strokeWidth: 1 }));
+        }
+        for (let k = 0; k < 3; k++) { const a = Math.floor(rand() * n), b = Math.floor(rand() * n); if (a !== b) ch.push(React.createElement('line', { key: 'r' + k, x1: pts[a].x, y1: pts[a].y, x2: pts[b].x, y2: pts[b].y, stroke: thread, strokeWidth: 1, opacity: 0.7 })); }
+        const f = pts[0]; for (let r = 7; r <= 19; r += 6) ch.push(React.createElement('circle', { key: 'f' + r, cx: f.x, cy: f.y, r, fill: 'none', stroke: ink, strokeWidth: 1, opacity: 0.45 }));
+        pts.forEach((p, i) => ch.push(React.createElement('circle', { key: 'n' + i, cx: p.x, cy: p.y, r: p.r, fill: '#f7f3e9', stroke: ink, strokeWidth: 1.2 })));
+        const svg = React.createElement('svg', { viewBox: '0 0 ' + W + ' ' + H, width: '100%', style: { display: 'block' } }, ch);
+        return React.createElement('figure', { style: { margin: '0 0 26px', border: '1px solid #d8ccb4', background: '#f5f1e6' } },
+          svg,
+          React.createElement('figcaption', { style: { fontFamily: "'Courier New',monospace", fontSize: '.72rem', color: '#928462', letterSpacing: '.06em', padding: '0 10px 8px' } }, 'frontispiece · generated from the text')
         );
       }
 
-      return (
-        <div className="min-h-screen">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8">
-            {/* header */}
-            <div className="mb-6 sm:mb-8 flex justify-between items-start">
-              <div>
-                <div className="flex items-center gap-2">
-                  <a href="index.html"><h1 className="text-2xl sm:text-3xl font-light text-gray-900 mb-2">invisible cities</h1></a>
-                  <span className="text-gray-600 font-light">italo calvino</span>
-                </div>
-              </div>
-              <div className="flex gap-4 items-center">
-                {/* Edit Mode Toggle */}
-                <button
-                  onClick={() => setEditMode(!editMode)}
-                  className={`text-md text-gray-600 hover:text-gray-900 transition-colors pt-1 transition-colors ${
-                    editMode
-                      ? 'text-blue-800'
-                      : 'text-gray-600 hover:text-gray-200'
-                  }`}
-                >
-                  {editMode ? '✏️ annotating' : 'annotate'}
-                </button>
-                
-                {/* Export Button - only show when in edit mode */}
-                {editMode && (
-                  <button
-                    onClick={exportAnnotations}
-                    className="text-md text-gray-600 transition-colors pt-1 hover:text-green-800 transition-colors"
-                  >
-                    📄 export
-                  </button>
-                )}
+      // ---- text -> segments ----
+      makeSeg(text, o) {
+        o = o || {}; const style = {}; const acc = this.acc();
+        if (o.strong) style.fontWeight = 600;
+        if (o.em) style.fontStyle = 'italic';
+        let onClick, onEnter;
+        if (o.isAnno) {
+          style.cursor = 'pointer';
+          style.borderBottom = `1.5px ${o.active ? 'solid' : 'dotted'} ${o.colorHex}`;
+          style.color = o.active ? o.colorHex : 'inherit';
+          style.background = o.active ? this.hexA(o.colorHex, 0.12) : 'transparent';
+          style.transition = 'background .2s, color .2s';
+          onClick = () => this.setActive(o.annId);
+          onEnter = () => { if (this.state.activeAnn !== o.annId) this.setActive(o.annId); };
+        }
+        if (o.link) { style.color = acc; style.textDecoration = 'underline'; style.textUnderlineOffset = '2px'; style.cursor = 'pointer'; onClick = () => window.open(o.link, '_blank', 'noopener'); }
+        return { text, style, onClick, onEnter, hasNum: false, num: null, numStyle: {} };
+      }
+      pushText(segs, chunk, meta) {
+        if (chunk == null || chunk === '') return;
+        const re = /(\*\*[\s\S]*?\*\*|\*[\s\S]*?\*|\[[^\]]+\]\([^)]+\))/g;
+        let last = 0, m;
+        const add = (t, extra) => { if (t === '') return; segs.push(this.makeSeg(t, Object.assign({}, meta, extra))); };
+        while ((m = re.exec(chunk))) {
+          add(chunk.slice(last, m.index), {});
+          const tok = m[0];
+          if (tok.startsWith('**')) add(tok.slice(2, -2), { strong: true });
+          else if (tok.startsWith('*')) add(tok.slice(1, -1), { em: true });
+          else { const lm = tok.match(/^\[([^\]]+)\]\(([^)]+)\)$/); if (lm) add(lm[1], { link: lm[2] }); }
+          last = re.lastIndex;
+        }
+        add(chunk.slice(last), {});
+      }
+      buildReading(city) {
+        const anns = this.state.annotations;
+        const lines = this.textOf(city).split(/\n+/).map(l => l.replace(/\s+$/, '')).filter(l => l.trim().length);
+        let counter = 0; const notes = [];
+        const paras = lines.map(line => {
+          const segs = [];
+          line.split(/(\[annotation-\d+\][\s\S]*?\[\/annotation-\d+\])/).forEach(part => {
+            const mm = part.match(/^\[annotation-(\d+)\]([\s\S]*?)\[\/annotation-\d+\]$/);
+            if (mm) {
+              const id = 'annotation-' + mm[1], content = mm[2], ann = anns[id];
+              if (this.isVisible(ann)) {
+                counter++; const colorHex = this.colorHex(ann.color); const active = this.state.activeAnn === id;
+                const start = segs.length;
+                this.pushText(segs, content, { isAnno: true, annId: id, colorHex, active });
+                if (segs.length > start) {
+                  segs[start].hasNum = true; segs[start].num = counter;
+                  segs[start].numStyle = { fontFamily: "'Courier New',monospace", fontSize: '.6em', verticalAlign: 'super', marginLeft: '1px', color: colorHex, fontStyle: 'normal', fontWeight: 400 };
+                }
+                const nsegs = []; this.pushText(nsegs, ann.note, {});
+                notes.push({ id, num: counter, segs: nsegs, tags: ann.tags || [], author: ann.author || (ann.scope === 'community' ? 'reader' : 'Claire'), isAuthor: ann.scope !== 'community', colorHex });
+              } else { this.pushText(segs, content, {}); }
+            } else { this.pushText(segs, part, {}); }
+          });
+          return { segs };
+        });
+        return { paras, notes };
+      }
 
-                {/* Admin Button - only show when in edit mode */}
-                {editMode && (
-                  <button
-                    onClick={() => adminMode ? setShowUpdatePreview(true) : setShowAdminLogin(true)}
-                    className={`text-md text-gray-600 hover:text-gray-900 pt-1 transition-colors ${
-                      adminMode
-                        ? 'text-purple-800 hover:text-purple-200'
-                        : 'text-yellow-800 hover:text-yellow-200'
-                    }`}
-                  >
-                    {adminMode ? '🔧 Update JSON' : '🔐'}
-                  </button>
-                )}
-                
-                <a
-                  href="overview.html"
-                  className="text-md text-gray-600 hover:text-gray-900 transition-colors pt-1"
-                >
-                  overview
-                </a>
-                <a
-                  href="about.html"
-                  className="text-md text-gray-600 hover:text-gray-900 transition-colors pt-1"
-                >
-                  about
-                </a>
-              </div>
+      // ---- sequence / navigation ----
+      sequence() {
+        const s = this.state;
+        const items = s.cities.map(c => ({ type: 'city', id: c.id, order: c.order }));
+        if (s.showInterludes) { (s.interludes || []).forEach(it => items.push({ type: 'interlude', id: it.id, order: (it.afterOrder || 0) + 0.5 })); }
+        return items.sort((a, b) => a.order - b.order);
+      }
+      curItem() {
+        const s = this.state;
+        if (s.selType === 'interlude') { const it = (s.interludes || []).find(x => x.id === s.selId); return it ? { type: 'interlude', data: it } : null; }
+        const c = s.cities.find(x => x.id === s.selId); return c ? { type: 'city', data: c } : null;
+      }
+      step(dir) {
+        const seq = this.sequence();
+        const i = seq.findIndex(x => x.type === this.state.selType && x.id === this.state.selId);
+        const j = i + dir; if (j < 0 || j >= seq.length) return;
+        const t = seq[j];
+        if (t.type === 'city') this.pushCityUrl(t.id);
+        this.setState({ selType: t.type, selId: t.id, activeAnn: null, sel: null }, () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+      }
+      seqLabel(dir) {
+        const seq = this.sequence();
+        const i = seq.findIndex(x => x.type === this.state.selType && x.id === this.state.selId);
+        const j = i + dir; if (j < 0 || j >= seq.length) return null;
+        const t = seq[j]; if (t.type === 'interlude') return 'Interlude';
+        const c = this.state.cities.find(x => x.id === t.id); return c ? c.name : null;
+      }
+
+      // ---- actions ----
+      select(type, id) {
+        if (type === 'city') this.pushCityUrl(id);
+        this.setState({ view: 'read', selType: type, selId: id, activeAnn: null, sel: null, indexOpen: false }, () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+      }
+      setActive(id) { this.setState(s => ({ activeAnn: s.activeAnn === id ? null : id })); }
+      setView(v) { this.pushViewUrl(v); this.setState({ view: v, sel: null }); }
+      toggleAnnotate() { this.setState(s => ({ annotating: !s.annotating, sel: null, view: 'read' })); }
+
+      onMouseUp() {
+        if (!this.state.annotating) return;
+        const sel = window.getSelection(); if (!sel || sel.isCollapsed) return;
+        const text = sel.toString().trim(); if (text.length < 2) return;
+        const el = this.readingRef.current; if (!el) return;
+        const range = sel.getRangeAt(0); if (!el.contains(range.commonAncestorContainer)) return;
+        const r = range.getBoundingClientRect();
+        this.setState({ sel: { text, x: r.left + r.width / 2, y: r.bottom } });
+      }
+      insertAnn(text, quote, id) {
+        const cleanFull = text.replace(/\[annotation-\d+\](.*?)\[\/annotation-\d+\]/g, '$1');
+        const start = cleanFull.indexOf(quote); if (start === -1) return text;
+        const end = start + quote.length; let os = 0, oe = 0, cp = 0, op = 0;
+        while (op < text.length && cp <= end) {
+          const o = text.substr(op);
+          const mo = o.match(/^\[annotation-\d+\]/), mc = o.match(/^\[\/annotation-\d+\]/);
+          if (mo) op += mo[0].length; else if (mc) op += mc[0].length;
+          else { if (cp === start) os = op; if (cp === end) { oe = op; break; } cp++; op++; }
+        }
+        if (cp === end && oe === 0) oe = op;
+        return text.slice(0, os) + `[${id}]` + text.slice(os, oe) + `[/${id}]` + text.slice(oe);
+      }
+      async saveNote() {
+        const s = this.state; if (s.noteBusy || !s.sel || !s.composerNote.trim()) return;
+        const city = s.cities.find(c => c.id === s.selId); if (!city) return;
+        const note = s.composerNote.trim();
+        const tags = s.composerTags.split(',').map(t => t.trim()).filter(Boolean);
+
+        // Hygiene: instant word/length filter, then the optional server-side LLM gate.
+        const localErr = screenNote(note);
+        if (localErr) { this.setState({ noteError: localErr }); return; }
+
+        const ids = Object.keys(s.annotations).map(k => parseInt(k.replace('annotation-', '')) || 0);
+        const id = 'annotation-' + ((ids.length ? Math.max(...ids) : 0) + 1);
+        const newText = this.insertAnn(this.textOf(city), s.sel.text, id);
+        const author = s.composerAuthor.trim().slice(0, 40) || 'reader';
+        const payload = { city_id: city.id, anchor: s.sel.text, note, tags, author };
+
+        const weaveIn = (row) => {
+          const ann = { note, color: 'gray', tags, scope: 'community', author: (row && row.author) || author, remoteId: row && row.id };
+          const annotations = Object.assign({}, s.annotations, { [id]: ann });
+          const overrides = Object.assign({}, s.overrides, { [city.id]: newText });
+          this.setState({ annotations, overrides, sel: null, composerNote: '', composerTags: '', composerAuthor: '', activeAnn: id, noteBusy: false, noteError: null });
+        };
+
+        if (SUBMIT_ENDPOINT) {
+          // Preferred path: moderate + insert server-side (bypass-proof).
+          this.setState({ noteBusy: true, noteError: null });
+          try {
+            const res = await submitNote(payload);
+            if (!res.ok) { this.setState({ noteBusy: false, noteError: res.reason }); return; }
+            weaveIn(res.row);
+          } catch (e) { this.setState({ noteBusy: false, noteError: 'Could not reach the server — please try again.' }); }
+          return;
+        }
+
+        if (supa) {
+          // No edge function: insert directly with the publishable key. Requires the
+          // table's insert policy to allow status='approved'.
+          this.setState({ noteBusy: true, noteError: null });
+          const { data, error } = await supa.from('notes').insert(Object.assign({}, payload, { status: 'approved' })).select().single();
+          if (error) { this.setState({ noteBusy: false, noteError: 'Could not post note — please try again.' }); return; }
+          weaveIn(data);
+          return;
+        }
+
+        // Local-only fallback (no Supabase configured): keep the note in this browser.
+        const ann = { note, color: 'gray', tags, scope: 'community', author: s.composerAuthor.trim().slice(0, 40) || 'you' };
+        const annotations = Object.assign({}, s.annotations, { [id]: ann });
+        const overrides = Object.assign({}, s.overrides, { [city.id]: newText });
+        const communityNotes = {}; Object.entries(annotations).forEach(([k, v]) => { if (v.scope === 'community') communityNotes[k] = v; });
+        try { localStorage.setItem('ic-notes', JSON.stringify(communityNotes)); localStorage.setItem('ic-overrides', JSON.stringify(overrides)); } catch (e) {}
+        this.setState({ annotations, overrides, sel: null, composerNote: '', composerTags: '', composerAuthor: '', activeAnn: id, noteError: null });
+      }
+
+      // ---- compute render values ----
+      renderVals() {
+        const s = this.state, acc = this.acc();
+        const tones = { Ivory: '#f9f7f1', Sand: '#f2eee2', Parchment: '#ece1c9' };
+        const paper = tones[this.config.paperTone] || '#f9f7f1';
+        if (s.loading) return { loading: true, ready: false, acc, rootStyle: { minHeight: '100vh', background: paper } };
+
+        const navBase = { cursor: 'pointer', color: '#5f5647', transition: 'color .2s', paddingBottom: '2px', borderBottom: '2px solid transparent' };
+        const navOn = { cursor: 'pointer', color: acc, paddingBottom: '2px', borderBottom: '2px solid ' + acc };
+        const isRead = s.view === 'read', isOverview = s.view === 'overview', isAbout = s.view === 'about';
+        const item = this.curItem();
+        const isCity = isRead && item && item.type === 'city';
+        const isInterlude = isRead && item && item.type === 'interlude';
+
+        // reading content
+        let paras = [], notes = [], cur = {}, interParas = [];
+        if (isCity) {
+          const c = item.data; const built = this.buildReading(c);
+          paras = built.paras; notes = built.notes;
+          const hasImage = !!c.image;
+          const figureEl = hasImage ? React.createElement('figure', { style: { margin: '0 0 26px' } },
+            React.createElement('img', { src: c.image, alt: c.name, style: { width: '100%', display: 'block', border: '1px solid #d8ccb4', filter: 'sepia(.12) saturate(.92)' } }),
+            React.createElement('figcaption', { style: { fontFamily: "'Courier New',monospace", fontSize: '.74rem', color: '#7a6f58', marginTop: '6px' } }, 'sourced illustration — see the atlas for credits')
+          ) : this.genPlate(c);
+          cur = { name: c.name, category: c.category, roman: 'Chapter ' + this.roman(c.chapter), folio: String(c.order).padStart(2, '0'), hasImage, image: c.image || '', figureEl };
+        } else if (isInterlude) {
+          const it = item.data; interParas = (it.text || '').split(/\n+/).map(x => x.trim()).filter(Boolean);
+          cur = { name: (it.kind === 'opening' ? 'Opening dialogue' : 'Closing dialogue'), roman: 'Chapter ' + this.roman(it.chapter) };
+        }
+
+        // margin notes styled
+        const marginNotes = notes.map(n => ({
+          id: n.id, num: n.num, segs: n.segs, tags: n.tags, author: n.author || (n.isAuthor ? 'Claire' : 'reader'),
+          numStyle: { fontFamily: "'Courier New',monospace", fontSize: '.78rem', color: n.colorHex, minWidth: '16px', fontWeight: 600 },
+          badgeStyle: { fontVariant: 'small-caps', letterSpacing: '.06em', fontSize: '.72rem', padding: '1px 6px', border: '1px solid ' + (n.isAuthor ? this.hexA(acc, .4) : '#d8ccb4'), color: n.isAuthor ? acc : '#7a6f58', background: n.isAuthor ? this.hexA(acc, .05) : 'transparent' },
+          style: { cursor: 'pointer', padding: '11px 12px', marginBottom: '10px', background: s.activeAnn === n.id ? '#f7f2e6' : 'transparent', borderLeft: '2px solid ' + (s.activeAnn === n.id ? n.colorHex : '#e2d7c1'), transition: 'background .2s,border-color .2s' },
+          select: () => this.setActive(n.id), hover: () => { if (s.activeAnn !== n.id) this.setActive(n.id); }
+        }));
+
+        // tag filter list (from current city notes)
+        const tagSet = []; notes.forEach(n => n.tags.forEach(t => { if (!tagSet.includes(t)) tagSet.push(t); }));
+        const chip = (on) => ({ cursor: 'pointer', fontVariant: 'small-caps', letterSpacing: '.05em', fontSize: '.8rem', padding: '2px 9px', border: '1px solid ' + (on ? acc : '#d8ccb4'), color: on ? '#faf6ec' : '#6f6555', background: on ? acc : 'transparent', transition: 'all .15s' });
+        const tagList = tagSet.map(t => ({ label: t, style: chip(s.activeTag === t), select: () => this.setState(st => ({ activeTag: st.activeTag === t ? null : t })) }));
+
+        // index groups
+        let indexGroups = [];
+        const showFolios = this.config.showFolios !== false;
+        const q = s.search.trim().toLowerCase();
+        const match = (c) => !q || c.name.toLowerCase().includes(q) || c.category.toLowerCase().includes(q) || (c.tags || []).some(t => t.toLowerCase().includes(q));
+        const cityRow = (c) => ({
+          key: 'c-' + c.id, name: c.name, folio: String(c.order).padStart(2, '0'), isCity: true, isInterlude: false,
+          folioStyle: { fontFamily: "'Courier New',monospace", fontSize: '.76rem', color: '#928462', minWidth: '18px', display: showFolios ? 'inline' : 'none' },
+          style: { display: 'flex', gap: '9px', alignItems: 'baseline', cursor: 'pointer', padding: '4px 8px', margin: '0 -8px', background: (s.selType === 'city' && s.selId === c.id) ? '#f7f2e6' : 'transparent', borderLeft: '2px solid ' + ((s.selType === 'city' && s.selId === c.id) ? acc : 'transparent'), color: (s.selType === 'city' && s.selId === c.id) ? acc : '#2b2620', transition: 'all .15s' },
+          select: () => this.select('city', c.id)
+        });
+        const intRow = (it) => ({
+          key: 'i-' + it.id, name: (it.kind === 'opening' ? 'opening dialogue' : 'closing dialogue'), isCity: false, isInterlude: true,
+          style: { display: 'flex', gap: '7px', alignItems: 'baseline', cursor: 'pointer', padding: '3px 8px', margin: '0 -8px', background: (s.selType === 'interlude' && s.selId === it.id) ? '#f7f2e6' : 'transparent', borderLeft: '2px solid ' + ((s.selType === 'interlude' && s.selId === it.id) ? acc : 'transparent'), color: '#756b53', transition: 'all .15s' },
+          select: () => this.select('interlude', it.id)
+        });
+        if (s.mode === 'linear') {
+          for (let ch = 1; ch <= 9; ch++) {
+            const items = [];
+            (s.interludes || []).filter(it => it.chapter === ch && it.kind === 'opening' && s.showInterludes).forEach(it => items.push(intRow(it)));
+            s.cities.filter(c => c.chapter === ch && match(c)).forEach(c => items.push(cityRow(c)));
+            (s.interludes || []).filter(it => it.chapter === ch && it.kind === 'closing' && s.showInterludes).forEach(it => items.push(intRow(it)));
+            if (items.length) indexGroups.push({ key: 'ch-' + ch, label: 'Chapter', roman: this.roman(ch), items });
+          }
+        } else {
+          s.categoryOrder.forEach(cat => {
+            const items = s.cities.filter(c => c.category === cat && match(c)).map(cityRow);
+            if (items.length) indexGroups.push({ key: 'cat-' + cat, label: cat.replace('Cities & ', '& ').replace('Cities ', ''), roman: '', items });
+          });
+        }
+
+        // overview / atlas
+        let ovGroups = [];
+        if (isOverview) {
+          ovGroups = s.categoryOrder.map(cat => {
+            const list = s.cities.filter(c => c.category === cat);
+            return {
+              key: cat, category: cat, countLabel: list.length + ' cities', cities: list.map(c => ({
+                key: c.id, name: c.name, folio: String(c.order).padStart(2, '0'), preview: this.clean(c.text).slice(0, 118) + '…',
+                style: { cursor: 'pointer', padding: '14px 15px', border: '1px solid ' + (s.ovHover === c.id ? '#c9ba9c' : '#e2d7c1'), background: s.ovHover === c.id ? '#f7f2e6' : '#f9f5ea', transition: 'all .18s', boxShadow: s.ovHover === c.id ? '0 4px 14px rgba(0,0,0,.05)' : 'none' },
+                select: () => this.select('city', c.id), hover: () => this.setState({ ovHover: c.id }), unhover: () => this.setState({ ovHover: null })
+              }))
+            };
+          }).filter(g => g.cities.length);
+        }
+
+        // composer position
+        let composerStyle = {}, quotePreview = '';
+        const showComposer = s.annotating && !!s.sel;
+        if (s.sel) {
+          quotePreview = s.sel.text.length > 90 ? s.sel.text.slice(0, 90) + '…' : s.sel.text;
+          const left = Math.max(16, Math.min(s.sel.x - 160, window.innerWidth - 336));
+          const top = Math.min(s.sel.y + 12, window.innerHeight - 260);
+          composerStyle = { position: 'fixed', left: left + 'px', top: top + 'px', width: '320px', zIndex: 9999, background: '#faf6ec', border: '1px solid #cdbfa4', boxShadow: '0 10px 40px rgba(43,38,32,.22)', padding: '15px 16px', animation: 'ic-fade .18s ease' };
+        }
+
+        return {
+          loading: false, ready: true, acc, paper,
+          rootStyle: { minHeight: '100vh', background: paper },
+          narrow: s.narrow, indexOpen: s.indexOpen,
+          toggleIndex: () => this.setState(st => ({ indexOpen: !st.indexOpen })),
+          goHome: () => this.setView('read'), goRead: () => this.setView('read'), goOverview: () => this.setView('overview'), goAbout: () => this.setView('about'),
+          toggleAnnotate: () => this.toggleAnnotate(), annotating: s.annotating, notAnnotating: !s.annotating, sharedNotes: !!supa,
+          annotateLabel: s.annotating ? '✓ annotating' : 'annotate',
+          readNavStyle: isRead ? navOn : navBase, ovNavStyle: isOverview ? navOn : navBase,
+          aboutNavStyle: isAbout ? navOn : navBase, annNavStyle: s.annotating ? navOn : navBase,
+          isRead, isOverview, isAbout, isCity, isInterlude,
+          setLinear: () => this.setState({ mode: 'linear' }), setTheme: () => this.setState({ mode: 'theme' }),
+          modeLinearStyle: { cursor: 'pointer', whiteSpace: 'nowrap', padding: '6px 14px', fontVariant: 'small-caps', letterSpacing: '.06em', fontSize: '.86rem', background: s.mode === 'linear' ? acc : 'transparent', color: s.mode === 'linear' ? '#faf6ec' : '#6f6555', transition: 'all .15s' },
+          modeThemeStyle: { cursor: 'pointer', whiteSpace: 'nowrap', padding: '6px 14px', fontVariant: 'small-caps', letterSpacing: '.06em', fontSize: '.86rem', background: s.mode === 'theme' ? acc : 'transparent', color: s.mode === 'theme' ? '#faf6ec' : '#6f6555', transition: 'all .15s' },
+          search: s.search, onSearch: (e) => this.setState({ search: e.target.value }),
+          indexGroups, cur, paras, interParas, interEmpty: isInterlude && interParas.length === 0, readingRef: this.readingRef,
+          marginNotes, noNotes: isCity && marginNotes.length === 0, noteCountLabel: marginNotes.length ? (marginNotes.length + ' notes') : '—',
+          toggleAuthor: () => this.setState(st => ({ showAuthor: !st.showAuthor })), toggleReaders: () => this.setState(st => ({ showReaders: !st.showReaders })),
+          authorChipStyle: chip(s.showAuthor), readersChipStyle: chip(s.showReaders), tagList,
+          goPrev: () => this.step(-1), goNext: () => this.step(1),
+          prevLabel: this.seqLabel(-1) || '', nextLabel: this.seqLabel(1) || '',
+          prevStyle: { cursor: this.seqLabel(-1) ? 'pointer' : 'default', visibility: this.seqLabel(-1) ? 'visible' : 'hidden', fontStyle: 'italic', color: '#6f6555', fontSize: '1.05rem' },
+          nextStyle: { cursor: this.seqLabel(1) ? 'pointer' : 'default', visibility: this.seqLabel(1) ? 'visible' : 'hidden', fontStyle: 'italic', color: '#6f6555', fontSize: '1.05rem' },
+          ovGroups,
+          showComposer, composerStyle, quotePreview,
+          composerNote: s.composerNote, composerTags: s.composerTags, composerAuthor: s.composerAuthor,
+          composerShared: !!supa, composerError: s.noteError, composerBusy: s.noteBusy,
+          composerSaveLabel: s.noteBusy ? 'posting…' : (supa ? 'post note' : 'pin note'),
+          onComposerNote: (e) => this.setState({ composerNote: e.target.value, noteError: null }), onComposerTags: (e) => this.setState({ composerTags: e.target.value }),
+          onComposerAuthor: (e) => this.setState({ composerAuthor: e.target.value }),
+          saveNote: () => this.saveNote(), cancelNote: () => this.setState({ sel: null, composerNote: '', composerTags: '', composerAuthor: '', noteError: null, noteBusy: false })
+        };
+      }
+
+      // ---- render ----
+      render() {
+        const v = this.renderVals();
+        if (v.loading) {
+          return (
+            <div style={v.rootStyle}>
+              <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#7a6f58', fontStyle: 'italic', fontSize: '1.25rem' }}>opening the book…</div>
             </div>
+          );
+        }
+        const narrow = v.narrow;
+        const container = { maxWidth: '1180px', margin: '0 auto', padding: narrow ? '22px 18px 80px' : '34px 30px 96px' };
 
-            {/* Edit Mode Instructions */}
-            {editMode && (
-              <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                <p className="text-sm text-blue-800 mb-2">
-                  📝 <strong>Annotation Mode:</strong> Select any text in the city description to add annotations.
-                  Your annotations are automatically saved to browser storage.
-                </p>
-                <div className="text-xs text-blue-600">
-                  <strong>Shortcuts:</strong> Ctrl+Shift+H (toggle mode) • Escape (cancel) • Ctrl+Enter (submit annotation)
+        // ---- reading layout columns ----
+        const readCols = narrow ? '1fr' : '230px minmax(0,1fr)';
+        const cityCols = narrow ? '1fr' : 'minmax(0,1fr) 248px';
+
+        return (
+          <div style={v.rootStyle}>
+            <div style={container}>
+
+              {/* header */}
+              <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', borderBottom: '1px solid #ddd0b8', paddingBottom: '16px', marginBottom: '22px', gap: '16px', flexWrap: 'wrap' }}>
+                <div onClick={v.goHome} style={{ cursor: 'pointer' }}>
+                  <div style={{ fontVariant: 'small-caps', letterSpacing: '.16em', fontSize: '.78rem', color: '#7a6f58', marginBottom: '1px' }}>Italo Calvino</div>
+                  <div style={{ fontSize: narrow ? '1.7rem' : '2.1rem', fontWeight: 500, fontStyle: 'italic', letterSpacing: '.01em', lineHeight: 1 }}>Invisible Cities</div>
                 </div>
-              </div>
-            )}
+                <nav style={{ display: 'flex', gap: narrow ? '16px' : '26px', alignItems: 'center', fontVariant: 'small-caps', letterSpacing: '.09em', fontSize: narrow ? '1rem' : '1.14rem' }}>
+                  <span onClick={v.goRead} style={v.readNavStyle}>the cities</span>
+                  <span onClick={v.goOverview} style={v.ovNavStyle}>the atlas</span>
+                  <span onClick={v.goAbout} style={v.aboutNavStyle}>about</span>
+                  <span onClick={v.toggleAnnotate} style={v.annNavStyle}>{v.annotateLabel}</span>
+                </nav>
+              </header>
 
-            {/* mobile menu button */}
-            {isMobile && (
-              <div className="mb-4">
-                <button
-                  onClick={() => setSidebarOpen(!sidebarOpen)}
-                  className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                  </svg>
-                  {sidebarOpen ? 'Hide Cities' : 'Show Cities'}
-                </button>
-              </div>
-            )}
+              {/* annotate banner */}
+              {v.annotating && (
+                <div style={{ marginBottom: '20px', padding: '11px 16px', border: '1px solid #d8ccb4', background: '#f7f2e6', fontSize: '.95rem', color: '#6f6555', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', animation: 'ic-fade .25s ease' }}>
+                  <span><em style={{ color: v.acc }}>Marginalia mode.</em>&nbsp; Select any passage to leave a note in the margin. Reader notes are saved to this browser.</span>
+                  <span onClick={v.toggleAnnotate} style={{ cursor: 'pointer', fontVariant: 'small-caps', letterSpacing: '.08em', color: v.acc, whiteSpace: 'nowrap' }}>done ×</span>
+                </div>
+              )}
 
-            {/* search */}
-            <div className="mb-6 sm:mb-8">
-              <input
-                type="text"
-                placeholder="search cities, categories, or tags..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full max-w-md px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
-            </div>
-
-            <div className="flex flex-col lg:flex-row gap-4 lg:gap-8 lg:gap-12">
-              {/* city list */}
-              <div className={`cities-container ${isMobile ? (sidebarOpen ? 'block' : 'hidden') : ''} ${isMobile ? 'w-full' : ''}`}>
-                {filteredCities.map(city => (
-                  <div
-                    key={city.id}
-                    onClick={() => {
-                      setSelectedCity(city);
-                      updateUrl(city.id);
-                      if (isMobile) {
-                        setSidebarOpen(false);
-                      }
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
-                    className={`city-card ${selectedCity?.id === city.id ? 'selected' : ''}`}
-                  >
-                    <h3 className="city-name">{city.name}</h3>
-                    <p className="city-category">{city.category}</p>
-                    <div className="city-tags">
-                      {city.tags.map(tag => (
-                        <span key={tag} className="city-tag">{tag}</span>
-                      ))}
+              {/* ============ READING VIEW ============ */}
+              {v.isRead && (
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '20px', marginBottom: '22px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', flex: '0 0 auto', border: '1px solid #d8ccb4', background: '#f7f2e6' }}>
+                      <span onClick={v.setLinear} style={v.modeLinearStyle}>reading order</span>
+                      <span onClick={v.setTheme} style={v.modeThemeStyle}>by theme</span>
                     </div>
+                    <input type="text" value={v.search} onChange={v.onSearch} placeholder="search cities, themes, tags…" style={{ flex: 1, minWidth: '180px', maxWidth: '340px', padding: '8px 12px', border: '1px solid #d8ccb4', background: '#faf6ec', fontSize: '1rem', color: '#2b2620', outline: 'none' }} />
                   </div>
-                ))}
-              </div>
 
-              {/* city detail */}
-              <div className="flex-1 min-w-0">
-                {selectedCity ? (
-                  <div>
-                    <div className="mb-6">
-                      <h2 className="city-title font-light text-gray-900 mb-1">{selectedCity.name}</h2>
-                      <p className="city-category text-gray-600 font-light mb-4">{selectedCity.category}</p>
+                  {/* narrow: contents toggle */}
+                  {narrow && (
+                    <div style={{ marginBottom: '16px' }}>
+                      <span onClick={v.toggleIndex} style={{ cursor: 'pointer', display: 'inline-block', padding: '7px 14px', border: '1px solid #d8ccb4', background: '#f7f2e6', fontVariant: 'small-caps', letterSpacing: '.08em', fontSize: '.86rem', color: '#6f6555' }}>
+                        {v.indexOpen ? 'hide contents ×' : '☰ contents'}
+                      </span>
                     </div>
+                  )}
 
-                    <div className="prose max-w-none">
-                      <div
-                        ref={textContainerRef}
-                        className={`city-text ${editMode ? 'select-text cursor-text' : ''}`}
-                        style={{ userSelect: editMode ? 'text' : 'auto' }}
-                      >
-                        {renderAnnotatedText(selectedCity.text)}
-                      </div>
-                    </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: readCols, gap: narrow ? '0' : '40px', alignItems: 'start' }}>
 
-                    <div className="mt-6">
-                      {selectedCity.image && (
-                        <img
-                          src={selectedCity.image}
-                          alt={selectedCity.name}
-                          className="w-full max-w-lg h-full object-cover rounded-lg mb-6"
-                        />
+                    {/* INDEX */}
+                    {(!narrow || v.indexOpen) && (
+                      <aside style={narrow
+                        ? { marginBottom: '28px', paddingBottom: '20px', borderBottom: '1px solid #ddd0b8' }
+                        : { position: 'sticky', top: '22px', maxHeight: 'calc(100vh - 44px)', overflowY: 'auto', overflowX: 'hidden', paddingRight: '6px' }}>
+                        {v.indexGroups.map(grp => (
+                          <div key={grp.key} style={{ marginBottom: '20px' }}>
+                            <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '8px', paddingBottom: '5px', borderBottom: '1px solid #e2d7c1' }}>
+                              <span style={{ fontFamily: "'Courier New',monospace", fontSize: '.78rem', color: v.acc }}>{grp.roman}</span>
+                              <span style={{ fontVariant: 'small-caps', letterSpacing: '.09em', fontSize: '.82rem', color: '#6f6555' }}>{grp.label}</span>
+                            </div>
+                            {grp.items.map(it => (
+                              <div key={it.key} onClick={it.select} style={it.style}>
+                                {it.isInterlude && <span style={{ color: v.acc, fontSize: '.8rem' }}>❧</span>}
+                                {it.isInterlude && <span style={{ fontStyle: 'italic', fontSize: '.92rem' }}>{it.name}</span>}
+                                {it.isCity && <span style={it.folioStyle}>{it.folio}</span>}
+                                {it.isCity && <span style={{ fontSize: '1.02rem' }}>{it.name}</span>}
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </aside>
+                    )}
+
+                    {/* READING PANE */}
+                    <div>
+                      {/* CITY */}
+                      {v.isCity && (
+                        <div style={{ display: 'grid', gridTemplateColumns: cityCols, gap: narrow ? '30px' : '40px', alignItems: 'start' }}>
+                          <article ref={v.readingRef}>
+                            <div style={{ fontVariant: 'small-caps', letterSpacing: '.12em', fontSize: '.78rem', color: v.acc, marginBottom: '6px' }}>{v.cur.category} · {v.cur.roman}</div>
+                            <h2 style={{ margin: '0 0 2px', fontSize: narrow ? '2rem' : '2.5rem', fontWeight: 500, fontStyle: 'italic', letterSpacing: '.01em' }}>{v.cur.name}</h2>
+                            <div style={{ fontFamily: "'Courier New',monospace", fontSize: '.8rem', color: '#7a6f58', marginBottom: '26px' }}>city № {v.cur.folio} of 55</div>
+
+                            {v.cur.figureEl}
+
+                            <div style={{ fontSize: narrow ? '1.16rem' : '1.28rem', lineHeight: 1.78, color: '#2b2620' }}>
+                              {v.paras.map((para, i) => (
+                                <p key={i} style={{ margin: '0 0 1.15em', textWrap: 'pretty' }}>
+                                  {para.segs.map((seg, j) => (
+                                    <span key={j} style={seg.style} onClick={seg.onClick} onMouseEnter={seg.onEnter}>
+                                      {seg.text}{seg.hasNum && <sup style={seg.numStyle}>{seg.num}</sup>}
+                                    </span>
+                                  ))}
+                                </p>
+                              ))}
+                            </div>
+
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', marginTop: '44px', paddingTop: '18px', borderTop: '1px solid #ddd0b8' }}>
+                              <span onClick={v.goPrev} style={v.prevStyle}>‹ {v.prevLabel}</span>
+                              <span onClick={v.goNext} style={v.nextStyle}>{v.nextLabel} ›</span>
+                            </div>
+                          </article>
+
+                          {/* MARGIN RAIL */}
+                          <aside style={narrow ? {} : { position: 'sticky', top: '22px' }}>
+                            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', borderBottom: '1px solid #ddd0b8', paddingBottom: '6px', marginBottom: '12px' }}>
+                              <span style={{ fontVariant: 'small-caps', letterSpacing: '.12em', fontSize: '.8rem', color: '#6f6555' }}>Marginalia</span>
+                              <span style={{ fontFamily: "'Courier New',monospace", fontSize: '.76rem', color: '#7a6f58' }}>{v.noteCountLabel}</span>
+                            </div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '16px' }}>
+                              <span onClick={v.toggleAuthor} style={v.authorChipStyle}>Claire's</span>
+                              <span onClick={v.toggleReaders} style={v.readersChipStyle}>readers</span>
+                              {v.tagList.map((tg, i) => (
+                                <span key={i} onClick={tg.select} style={tg.style}>{tg.label}</span>
+                              ))}
+                            </div>
+                            {v.marginNotes.map(note => (
+                              <div key={note.id} onClick={note.select} onMouseEnter={note.hover} style={note.style}>
+                                <div style={{ display: 'flex', gap: '8px', alignItems: 'baseline' }}>
+                                  <span style={note.numStyle}>{note.num}</span>
+                                  <div style={{ flex: 1 }}>
+                                    <div style={{ fontSize: '1rem', lineHeight: 1.5, color: '#3a342b' }}>
+                                      {note.segs.map((ns, i) => (
+                                        <span key={i} style={ns.style} onClick={ns.onClick}>{ns.text}</span>
+                                      ))}
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '7px', flexWrap: 'wrap' }}>
+                                      <span style={note.badgeStyle}>{note.author}</span>
+                                      {note.tags.map((t2, i) => (
+                                        <span key={i} style={{ fontFamily: "'Courier New',monospace", fontSize: '.62rem', color: '#7a6f58', letterSpacing: '.04em' }}>#{t2}</span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                            {v.noNotes && (
+                              <div style={{ fontStyle: 'italic', color: '#928462', fontSize: '.98rem', lineHeight: 1.5, marginBottom: '2px' }}>
+                                No notes on this city yet — be the first.
+                              </div>
+                            )}
+                            {/* invitation to annotate — always shown in the reading rail */}
+                            <div style={{ marginTop: v.noNotes ? '14px' : '18px', paddingTop: '12px', borderTop: '1px solid #e2d7c1' }}>
+                              {v.annotating ? (
+                                <div style={{ fontStyle: 'italic', color: '#756b53', fontSize: '.9rem', lineHeight: 1.5 }}>
+                                  Select any passage in the text to leave your note.
+                                </div>
+                              ) : (
+                                <div onClick={v.toggleAnnotate} style={{ cursor: 'pointer', lineHeight: 1.45 }}>
+                                  <span style={{ color: v.acc, fontWeight: 600, fontSize: '.94rem' }}>✎ Add your own note</span>
+                                  <span style={{ display: 'block', color: '#756b53', fontStyle: 'italic', fontSize: '.84rem', marginTop: '2px' }}>
+                                    {v.sharedNotes ? 'Your notes are shared with everyone who reads this city.' : 'Saved to this browser.'}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </aside>
+                        </div>
+                      )}
+
+                      {/* INTERLUDE */}
+                      {v.isInterlude && (
+                        <div style={{ maxWidth: '62ch', margin: '0 auto' }}>
+                          <div style={{ textAlign: 'center', marginBottom: '34px' }}>
+                            <div style={{ fontSize: '1.6rem', color: v.acc, marginBottom: '10px' }}>❧</div>
+                            <div style={{ fontVariant: 'small-caps', letterSpacing: '.16em', fontSize: '.82rem', color: '#6f6555' }}>Marco Polo &amp; Kublai Khan</div>
+                            <div style={{ fontFamily: "'Courier New',monospace", fontSize: '.78rem', color: '#7a6f58', marginTop: '5px' }}>{v.cur.name} · {v.cur.roman}</div>
+                          </div>
+                          <div style={{ maxWidth: '60ch', margin: '0 auto', fontStyle: 'italic', fontSize: narrow ? '1.18rem' : '1.34rem', lineHeight: 1.8, color: '#4a4335', textAlign: 'justify' }}>
+                            {v.interParas.map((ip, i) => (<p key={i} style={{ margin: '0 0 1.1em' }}>{ip}</p>))}
+                          </div>
+                          {v.interEmpty && (
+                            <div style={{ maxWidth: '60ch', margin: '26px auto 0', textAlign: 'center', fontStyle: 'italic', color: '#928462', fontSize: '.98rem' }}>This dialogue hasn't been transcribed yet.</div>
+                          )}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', margin: '44px auto 0', maxWidth: '60ch', paddingTop: '18px', borderTop: '1px solid #ddd0b8' }}>
+                            <span onClick={v.goPrev} style={v.prevStyle}>‹ {v.prevLabel}</span>
+                            <span onClick={v.goNext} style={v.nextStyle}>{v.nextLabel} ›</span>
+                          </div>
+                        </div>
                       )}
                     </div>
+                  </div>
+                </div>
+              )}
 
-                    {/* tags */}
-                    <div className="mt-8 pt-6 border-t border-gray-200">
-                      <div className="flex gap-2 flex-wrap">
-                        {selectedCity.tags.map(tag => (
-                          <span
-                            key={tag}
-                            className={`px-3 py-1 text-sm rounded-full bg-${tagColors[tag] || 'gray'}-100 text-${tagColors[tag] || 'gray'}-800`}
-                          >
-                            {tag}
-                          </span>
+              {/* ============ ATLAS / OVERVIEW ============ */}
+              {v.isOverview && (
+                <div>
+                  <div style={{ marginBottom: '30px', maxWidth: '64ch' }}>
+                    <h2 style={{ margin: '0 0 6px', fontSize: '2.1rem', fontWeight: 500, fontStyle: 'italic' }}>The Atlas</h2>
+                    <p style={{ margin: 0, fontSize: '1.18rem', lineHeight: 1.7, color: '#6f6555' }}>All fifty-five cities, arranged in Calvino's eleven thematic groups — five to a theme, woven through nine chapters in a strict combinatorial lattice.</p>
+                  </div>
+                  {v.ovGroups.map(g => (
+                    <section key={g.key} style={{ marginBottom: '38px' }}>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', borderBottom: '1px solid #ddd0b8', paddingBottom: '7px', marginBottom: '16px' }}>
+                        <h3 style={{ margin: 0, fontSize: '1.4rem', fontWeight: 500, fontStyle: 'italic' }}>{g.category}</h3>
+                        <span style={{ fontFamily: "'Courier New',monospace", fontSize: '.78rem', color: '#7a6f58' }}>{g.countLabel}</span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(250px,1fr))', gap: '14px' }}>
+                        {g.cities.map(c => (
+                          <div key={c.key} onClick={c.select} style={c.style} onMouseEnter={c.hover} onMouseLeave={c.unhover}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '7px' }}>
+                              <span style={{ fontSize: '1.2rem', fontStyle: 'italic', fontWeight: 500 }}>{c.name}</span>
+                              <span style={{ fontFamily: "'Courier New',monospace", fontSize: '.78rem', color: v.acc }}>{c.folio}</span>
+                            </div>
+                            <p style={{ margin: 0, fontSize: '.95rem', lineHeight: 1.5, color: '#6f6555' }}>{c.preview}</p>
+                          </div>
                         ))}
                       </div>
+                    </section>
+                  ))}
+                  <div style={{ marginTop: '40px', paddingTop: '18px', borderTop: '1px solid #ddd0b8', textAlign: 'center', fontSize: '.95rem', color: '#7a6f58', fontStyle: 'italic' }}>Fifty-five cities · eleven themes · nine chapters</div>
+                </div>
+              )}
+
+              {/* ============ ABOUT ============ */}
+              {v.isAbout && (
+                <div style={{ maxWidth: '66ch', margin: '0 auto', fontSize: '1.18rem', lineHeight: 1.75, color: '#3a342b' }}>
+                  <h2 style={{ margin: '0 0 4px', fontSize: '2.1rem', fontWeight: 500, fontStyle: 'italic' }}>About</h2>
+                  <p style={{ color: '#6f6555', fontSize: '1rem', fontVariant: 'small-caps', letterSpacing: '.1em', margin: '0 0 26px' }}>a digital reading of Italo Calvino</p>
+                  <p style={{ margin: '0 0 1.1em' }}><em>Invisible Cities</em> is a novel that describes fantastical cities through the conversations between Marco Polo and Kublai Khan. It's one of my favorite texts of all time and I keep coming back to it, trying to recommend others to read it, or just send quotes of it. There was no good online compilation of the chapters that I found easily explorable, so I thought it'd be nice to have a link to send.</p>
+                  <p style={{ margin: '0 0 1.1em' }}>Each city belongs to one of eleven themes — memory, desire, signs, thin cities, trading cities, eyes, names, the dead, the sky, continuous cities, and hidden cities — woven through nine chapters in a strict combinatorial lattice. You can wander by chapter or by theme, and the <span onClick={v.goOverview} style={{ cursor: 'pointer', color: v.acc, textDecoration: 'underline', textUnderlineOffset: '2px' }}>Atlas</span> lays the whole structure out at once.</p>
+                  <p style={{ margin: '0 0 1.1em' }}>The dialogues between Marco Polo and Kublai Khan that frame each chapter are now woven into the reading order too, as interludes between the cities — the connective tissue that's easy to lose when the cities are read in isolation.</p>
+                  <p style={{ margin: '0 0 1.1em' }}>A lot of the art comes from others on the internet, such as <a href="https://medium.com/@pooja.tarun.patel/interpreting-invisible-cities-with-illustrations-85a777551d8c" target="_blank" rel="noopener">Pooja Tarun Patel</a>, <a href="https://numerocinqmagazine.com/2016/11/03/calvinos-invisible-cities-made-visible-drawings-karina-puente-gary-garvin/" target="_blank" rel="noopener">Karina Puente and Gary Garvin</a>, and <a href="https://calvinoscities.wordpress.com/" target="_blank" rel="noopener">Calvino's Cities</a>.</p>
+                  <figure style={{ margin: '26px 0' }}>
+                    <img src="invisible_cities_made_visible_by_monkeelino_d4x55lg.jpg" alt="Invisible Cities table of contents" style={{ width: '100%', display: 'block', border: '1px solid #d8ccb4', filter: 'sepia(.12) saturate(.92)' }} />
+                    <figcaption style={{ fontFamily: "'Courier New',monospace", fontSize: '.74rem', color: '#7a6f58', marginTop: '6px' }}>The lattice of cities · <a href="https://www.deviantart.com/monkeelino/art/Invisible-Cities-Made-Visible-297532564" target="_blank" rel="noopener">original source</a></figcaption>
+                  </figure>
+                  <h3 style={{ fontSize: '1.3rem', fontWeight: 500, fontStyle: 'italic', margin: '32px 0 .4em' }}>About the text</h3>
+                  <p style={{ margin: '0 0 1.1em' }}><em>Invisible Cities</em> was first published in 1972 (English translation by William Weaver, 1974). It deconstructs the travel-literature genre — <em>The Travels of Marco Polo</em> — and explores memory, desire, language, and the relationship between reality and imagination. The cities are both places and metaphors for human conditions.</p>
+                  <p style={{ margin: '0 0 1.1em' }}>If you love it, read Calvino's <em>If on a winter's night a traveler</em> next.</p>
+                  <p style={{ margin: '0 0 1.1em', fontStyle: 'italic' }}>You can find more about me at <a href="https://www.clairebookworm.com" target="_blank" rel="noopener">clairebookworm.com</a>. Please reach out with any notes on my annotations or recommendations.</p>
+                  <p style={{ margin: '28px 0 0', paddingTop: '16px', borderTop: '1px solid #ddd0b8', fontSize: '.9rem', color: '#7a6f58' }}>This digital edition is for educational and personal exploration. The original text remains the intellectual property of Italo Calvino and his estate.</p>
+                </div>
+              )}
+
+              {/* COMPOSER */}
+              {v.showComposer && (
+                <div style={v.composerStyle}>
+                  <div style={{ fontVariant: 'small-caps', letterSpacing: '.1em', fontSize: '.8rem', color: v.acc, marginBottom: '8px' }}>Add a margin note</div>
+                  <div style={{ fontStyle: 'italic', fontSize: '.92rem', color: '#6f6555', lineHeight: 1.4, marginBottom: '10px', borderLeft: '2px solid #ddd0b8', paddingLeft: '9px' }}>“{v.quotePreview}”</div>
+                  <textarea value={v.composerNote} onChange={v.onComposerNote} placeholder="your reading, a memory, a link…" rows={3} maxLength={600} style={{ width: '100%', padding: '8px 10px', border: '1px solid #d8ccb4', background: '#faf6ec', fontSize: '1rem', fontFamily: 'inherit', color: '#2b2620', outline: 'none', resize: 'vertical' }}></textarea>
+                  <input type="text" value={v.composerTags} onChange={v.onComposerTags} placeholder="tags, comma separated" style={{ width: '100%', marginTop: '8px', padding: '7px 10px', border: '1px solid #d8ccb4', background: '#faf6ec', fontSize: '.92rem', color: '#2b2620', outline: 'none' }} />
+                  <input type="text" value={v.composerAuthor} onChange={v.onComposerAuthor} placeholder="your name (optional)" maxLength={40} style={{ width: '100%', marginTop: '8px', padding: '7px 10px', border: '1px solid #d8ccb4', background: '#faf6ec', fontSize: '.92rem', color: '#2b2620', outline: 'none' }} />
+                  {v.composerError && (
+                    <div style={{ marginTop: '8px', fontSize: '.86rem', color: '#7a3a30', fontStyle: 'italic' }}>{v.composerError}</div>
+                  )}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', marginTop: '11px' }}>
+                    <span style={{ fontSize: '.8rem', color: '#7a6f58', fontStyle: 'italic' }}>{v.composerShared ? 'shared publicly with all readers' : 'saved to this browser only'}</span>
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                      <span onClick={v.cancelNote} style={{ cursor: 'pointer', fontVariant: 'small-caps', letterSpacing: '.06em', fontSize: '.9rem', color: '#7a6f58', padding: '5px 8px' }}>cancel</span>
+                      <span onClick={v.saveNote} style={{ cursor: v.composerBusy ? 'default' : 'pointer', fontVariant: 'small-caps', letterSpacing: '.06em', fontSize: '.9rem', color: '#faf6ec', background: v.acc, padding: '6px 14px', opacity: v.composerBusy ? 0.6 : 1 }}>{v.composerSaveLabel}</span>
                     </div>
                   </div>
-                ) : (
-                  <div className="flex items-center justify-center h-96 text-gray-500">
-                    select a city to begin exploring
-                  </div>
-                )}
-              </div>
+                </div>
+              )}
+
             </div>
-            
-            {/* Annotation Form Popup */}
-            {showAnnotationForm && selectionInfo && (
-              <div
-                className="annotation-form fixed z-50 bg-white border border-gray-300 rounded-lg shadow-lg p-4"
-                style={{
-                  left: `${Math.min(selectionInfo.position.x - 150, window.innerWidth - 320)}px`,
-                  top: `${Math.max(selectionInfo.position.y - 10, 10)}px`,
-                  width: '300px',
-                  maxHeight: '400px',
-                  overflowY: 'auto'
-                }}
-              >
-                <div className="mb-3">
-                  <h3 className="text-sm font-medium text-gray-900 mb-2">
-                    Add Annotation
-                  </h3>
-                  <p className="text-xs text-gray-600 mb-2">
-                    "{selectedText.length > 50 ? selectedText.substring(0, 50) + '...' : selectedText}"
-                  </p>
-                </div>
-                
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">
-                      Note
-                    </label>
-                    <textarea
-                      value={annotationForm.note}
-                      onChange={(e) => setAnnotationForm({...annotationForm, note: e.target.value})}
-                      placeholder="Your analysis or observation... (required)"
-                      className="w-full p-2 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      rows={3}
-                      autoFocus
-                    />
-                  </div>
-                  
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">
-                      Color
-                    </label>
-                    <div className="flex gap-1 flex-wrap">
-                      {['blue', 'purple', 'orange', 'green', 'red', 'yellow', 'pink', 'indigo', 'cyan', 'gray'].map(color => (
-                        <button
-                          key={color}
-                          onClick={() => setAnnotationForm({...annotationForm, color})}
-                          className={`w-5 h-5 rounded border-2 ${
-                            annotationForm.color === color ? 'border-gray-800' : 'border-gray-300'
-                          } bg-${color}-200 hover:border-gray-600 transition-colors`}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">
-                      Tags (comma separated)
-                    </label>
-                    <input
-                      type="text"
-                      value={annotationForm.tags}
-                      onChange={(e) => setAnnotationForm({...annotationForm, tags: e.target.value})}
-                      placeholder="perception, semiotics, duality"
-                      className="w-full p-2 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    />
-                  </div>
-                  
-                  <div className="flex gap-2 pt-2">
-                    <button
-                      onClick={createAnnotation}
-                      disabled={!annotationForm.note.trim()}
-                      className="flex-1 px-3 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-                    >
-                      Add Annotation
-                    </button>
-                    <button
-                      onClick={() => {
-                        setShowAnnotationForm(false);
-                        setSelectionInfo(null);
-                        setSelectedText('');
-                        setAnnotationForm({ note: '', color: 'blue', tags: '' });
-                      }}
-                      className="px-3 py-2 bg-gray-200 text-gray-700 text-sm rounded hover:bg-gray-300 transition-colors"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Admin Login Modal */}
-            {showAdminLogin && (
-              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                <div className="bg-white rounded-lg p-6 w-96 max-w-90vw">
-                  <h2 className="text-lg font-medium text-gray-900 mb-4">Admin Access</h2>
-                  <p className="text-sm text-gray-600 mb-4">
-                    Enter the admin password to access JSON update features.
-                  </p>
-                  <input
-                    type="password"
-                    value={adminPassword}
-                    onChange={(e) => setAdminPassword(e.target.value)}
-                    placeholder="Enter admin password"
-                    className="w-full p-3 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-4"
-                    onKeyPress={(e) => e.key === 'Enter' && handleAdminLogin()}
-                    autoFocus
-                  />
-                  <div className="flex gap-2">
-                    <button
-                      onClick={handleAdminLogin}
-                      className="flex-1 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-                    >
-                      Login
-                    </button>
-                    <button
-                      onClick={() => {
-                        setShowAdminLogin(false);
-                        setAdminPassword('');
-                      }}
-                      className="px-4 py-2 bg-gray-300 text-gray-700 rounded hover:bg-gray-400 transition-colors"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* JSON Update Preview Modal */}
-            {showUpdatePreview && (
-              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                <div className="bg-white rounded-lg w-full max-w-4xl max-h-90vh flex flex-col">
-                  <div className="p-6 border-b border-gray-200">
-                    <h2 className="text-lg font-medium text-gray-900 mb-2">Update cities.json</h2>
-                    <p className="text-sm text-gray-600">
-                      Copy this JSON and replace your current cities.json file, or download it directly.
-                    </p>
-                  </div>
-                  
-                  <div className="flex-1 p-6 overflow-hidden">
-                    <div className="h-full">
-                      <textarea
-                        value={generateUpdatedJSON()}
-                        readOnly
-                        className="w-full h-full p-3 bg-gray-50 border border-gray-300 rounded font-mono text-sm resize-none"
-                        style={{ minHeight: '400px' }}
-                      />
-                    </div>
-                  </div>
-                  
-                  <div className="p-6 border-t border-gray-200 bg-gray-50">
-                    <div className="flex gap-2 flex-wrap">
-                      <button
-                        onClick={copyJSONToClipboard}
-                        className={`px-4 py-2 rounded transition-colors ${
-                          copied
-                            ? 'bg-green-100 text-green-800'
-                            : 'bg-blue-100 text-blue-800 hover:bg-blue-200'
-                        }`}
-                      >
-                        {copied ? '✅ Copied!' : '📋 Copy JSON'}
-                      </button>
-                      <button
-                        onClick={downloadUpdatedJSON}
-                        className="px-4 py-2 bg-purple-100 text-purple-800 hover:bg-purple-200 rounded transition-colors"
-                      >
-                        💾 Download cities.json
-                      </button>
-                      <button
-                        onClick={() => setShowUpdatePreview(false)}
-                        className="px-4 py-2 bg-gray-300 text-gray-700 hover:bg-gray-400 rounded transition-colors ml-auto"
-                      >
-                        Close
-                      </button>
-                    </div>
-                    <div className="mt-3 text-xs text-gray-500">
-                      <strong>Instructions:</strong> After copying or downloading, replace your original cities.json file with this updated version to make your annotations permanent.
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
-        </div>
-      );
-    };
+        );
+      }
+    }
 
-    ReactDOM.render(<InvisibleCitiesExplorer />, document.getElementById('root'));
+    ReactDOM.render(<InvisibleCities />, document.getElementById('root'));
   </script>
 </body>
 
