@@ -30,7 +30,7 @@ const BLOCKLIST = [
 
 function wordFilter(text: string): string | null {
   const t = (text || "").trim();
-  if (t.length < 2) return "Please write a little more.";
+  if (t.split(/\s+/).filter(Boolean).length < 5) return "Please write at least five words.";
   if (t.length > MAX_NOTE_LEN) return `Please keep notes under ${MAX_NOTE_LEN} characters.`;
   const words = " " + t.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ") + " ";
   for (const w of BLOCKLIST) { if (words.includes(" " + w + " ")) return "That note tripped the language filter."; }

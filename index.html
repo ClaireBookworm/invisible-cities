@@ -76,7 +76,7 @@
     // Returns an error string if the note should be rejected, or null if it's clean.
     function screenNote(text) {
       const t = (text || '').trim();
-      if (t.length < 2) return 'Please write a little more.';
+      if (t.split(/\s+/).filter(Boolean).length < 5) return 'Please write at least five words.';
       if (t.length > MAX_NOTE_LEN) return `Please keep notes under ${MAX_NOTE_LEN} characters.`;
       const words = ' ' + t.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ') + ' ';
       for (const w of BLOCKLIST) { if (words.includes(' ' + w + ' ')) return 'That note tripped the language filter.'; }
@@ -107,7 +107,7 @@
           annotating: false, activeAnn: null, showAuthor: true, showReaders: true, activeTag: null,
           showInterludes: true, sel: null, composerNote: '', composerTags: '', composerAuthor: '', ovHover: null,
           indexOpen: false, narrow: (typeof window !== 'undefined' && window.innerWidth < 900),
-          noteError: null, noteBusy: false, remoteReady: false
+          noteError: null, noteBusy: false, remoteReady: false, communityAnchors: {}
         };
         this.config = CONFIG;
         this.readingRef = React.createRef();
@@ -128,21 +128,24 @@
             anns[k] = { ...v, scope: v.scope || 'author', author: v.author || 'Claire' };
           });
           const cities = (data.cities || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
-          let overrides = {};
+          let communityAnchors = {};
 
           if (supa) {
             // Shared notes are the source of truth: pull every approved community note.
             try {
               const { data: rows, error } = await supa.from('notes').select().eq('status', 'approved');
               if (error) throw error;
-              overrides = this.mergeRemoteNotes(cities, anns, rows || []);
+              communityAnchors = this.mergeRemoteNotes(cities, anns, rows || []);
             } catch (e) { console.error('failed to load shared notes:', e); }
           } else {
             // Local-only fallback: this browser's drafted notes, from localStorage.
-            try { overrides = JSON.parse(localStorage.getItem('ic-overrides') || '{}'); } catch (e) {}
-            let notes = {};
-            try { notes = JSON.parse(localStorage.getItem('ic-notes') || '{}'); } catch (e) {}
-            Object.assign(anns, notes);
+            let saved = [];
+            try { saved = JSON.parse(localStorage.getItem('ic-community') || '[]'); } catch (e) {}
+            saved.forEach(o => {
+              if (!o || !o.id || !o.cityId) return;
+              anns[o.id] = { note: o.note, color: 'gray', tags: o.tags || [], scope: 'community', author: o.author || 'you', anchor: o.anchor, cityId: o.cityId };
+              (communityAnchors[o.cityId] = communityAnchors[o.cityId] || []).push({ id: o.id, anchor: o.anchor });
+            });
           }
 
           // initial view / selection from URL (?view=, ?city=)
@@ -155,36 +158,32 @@
           if (urlCity && cities.some(c => c.id === urlCity)) { selId = urlCity; view = 'read'; }
 
           this.setState({
-            loading: false, cities, annotations: anns, overrides, remoteReady: !!supa,
+            loading: false, cities, annotations: anns, communityAnchors, remoteReady: !!supa,
             interludes: data.interludes || [], categoryOrder: data.categoryOrder || [],
             view, selType: 'city', selId
           });
         }).catch(err => { console.error(err); this.setState({ loading: false }); });
       }
 
-      // Weave a set of Supabase note rows into the annotations map + per-city text
-      // overrides, reusing the same anchor-and-wrap logic as local notes. Returns
-      // the overrides map; mutates `anns` in place. Rows whose anchor phrase can no
-      // longer be found in the text are skipped (they simply don't appear).
+      // Register Supabase note rows as community annotations: metadata into `anns`
+      // (mutated in place), and per-city {id, anchor} pairs into the returned map.
+      // Nothing is injected into the text here — anchoring happens at render time
+      // (buildReading), which is what lets notes overlap each other freely.
       mergeRemoteNotes(cities, anns, rows) {
         const byId = {}; cities.forEach(c => { byId[c.id] = c; });
         const existing = Object.keys(anns).map(k => parseInt(k.replace('annotation-', '')) || 0);
         let next = (existing.length ? Math.max(...existing) : 0) + 1;
-        const overrides = {};
+        const communityAnchors = {};
         rows.forEach(row => {
-          const city = byId[row.city_id]; if (!city) return;
-          const base = overrides[city.id] != null ? overrides[city.id] : city.text;
-          const id = 'annotation-' + next;
-          const woven = this.insertAnn(base, row.anchor, id);
-          if (woven === base) return; // anchor not found — skip silently
-          next++;
-          overrides[city.id] = woven;
+          if (!byId[row.city_id]) return;
+          const id = 'annotation-' + next++;
           anns[id] = {
             note: row.note, color: 'gray', tags: row.tags || [],
-            scope: 'community', author: row.author || 'reader', remoteId: row.id
+            scope: 'community', author: row.author || 'reader', anchor: row.anchor, cityId: row.city_id, remoteId: row.id
           };
+          (communityAnchors[row.city_id] = communityAnchors[row.city_id] || []).push({ id, anchor: row.anchor });
         });
-        return overrides;
+        return communityAnchors;
       }
       componentWillUnmount() {
         document.removeEventListener('mouseup', this._mu);
@@ -309,7 +308,18 @@
       }
       buildReading(city) {
         const anns = this.state.annotations;
-        const lines = this.textOf(city).split(/\n+/).map(l => l.replace(/\s+$/, '')).filter(l => l.trim().length);
+        // Start from the author-annotated text, then weave in each visible community
+        // note whose anchor doesn't overlap an existing highlight. Overlapping ones
+        // are collected separately and shown in the margin with their quoted phrase.
+        const comm = (this.state.communityAnchors[city.id] || []).filter(c => this.isVisible(anns[c.id]));
+        let text = this.textOf(city);
+        const injected = new Set();
+        comm.forEach(c => {
+          const woven = this.insertAnnSafe(text, c.anchor, c.id);
+          if (woven) { text = woven; injected.add(c.id); }
+        });
+
+        const lines = text.split(/\n+/).map(l => l.replace(/\s+$/, '')).filter(l => l.trim().length);
         let counter = 0; const notes = [];
         const paras = lines.map(line => {
           const segs = [];
@@ -331,6 +341,15 @@
             } else { this.pushText(segs, part, {}); }
           });
           return { segs };
+        });
+
+        // Community notes that overlap an existing highlight: still shown in the
+        // margin (with the phrase they refer to), just not underlined inline.
+        comm.forEach(c => {
+          if (injected.has(c.id)) return;
+          const ann = anns[c.id]; if (!ann) return;
+          const nsegs = []; this.pushText(nsegs, ann.note, {});
+          notes.push({ id: c.id, num: '•', quote: c.anchor, segs: nsegs, tags: ann.tags || [], author: ann.author || 'reader', isAuthor: false, colorHex: this.colorHex(ann.color) });
         });
         return { paras, notes };
       }
@@ -394,6 +413,25 @@
         if (cp === end && oe === 0) oe = op;
         return text.slice(0, os) + `[${id}]` + text.slice(os, oe) + `[/${id}]` + text.slice(oe);
       }
+      // Wrap `quote` with annotation markup only if it does not overlap any existing
+      // annotation span (nested markup would break the non-nesting parser). Returns
+      // the new text, or null if the quote is missing or overlaps — in which case the
+      // caller shows the note in the margin instead of highlighting it inline.
+      insertAnnSafe(text, quote, id) {
+        const re = /\[annotation-\d+\]|\[\/annotation-\d+\]|[\s\S]/g;
+        let m, depth = 0, clean = '';
+        const covered = [];
+        while ((m = re.exec(text))) {
+          const tok = m[0];
+          if (/^\[annotation-\d+\]$/.test(tok)) { depth++; continue; }
+          if (/^\[\/annotation-\d+\]$/.test(tok)) { depth = Math.max(0, depth - 1); continue; }
+          clean += tok; covered.push(depth > 0);
+        }
+        const start = clean.indexOf(quote); if (start === -1) return null;
+        const end = start + quote.length;
+        for (let k = start; k < end; k++) { if (covered[k]) return null; }
+        return this.insertAnn(text, quote, id);
+      }
       async saveNote() {
         const s = this.state; if (s.noteBusy || !s.sel || !s.composerNote.trim()) return;
         const city = s.cities.find(c => c.id === s.selId); if (!city) return;
@@ -406,15 +444,19 @@
 
         const ids = Object.keys(s.annotations).map(k => parseInt(k.replace('annotation-', '')) || 0);
         const id = 'annotation-' + ((ids.length ? Math.max(...ids) : 0) + 1);
-        const newText = this.insertAnn(this.textOf(city), s.sel.text, id);
+        const anchor = s.sel.text;
         const author = s.composerAuthor.trim().slice(0, 40) || 'reader';
-        const payload = { city_id: city.id, anchor: s.sel.text, note, tags, author };
+        const payload = { city_id: city.id, anchor, note, tags, author };
 
-        const weaveIn = (row) => {
-          const ann = { note, color: 'gray', tags, scope: 'community', author: (row && row.author) || author, remoteId: row && row.id };
+        // Add the note as a render-time community anchor (no text mutation, so it can
+        // overlap other notes). `row` is the persisted DB row when there is one.
+        const add = (row) => {
+          const ann = { note, color: 'gray', tags, scope: 'community', author: (row && row.author) || author, anchor, cityId: city.id, remoteId: row && row.id };
           const annotations = Object.assign({}, s.annotations, { [id]: ann });
-          const overrides = Object.assign({}, s.overrides, { [city.id]: newText });
-          this.setState({ annotations, overrides, sel: null, composerNote: '', composerTags: '', composerAuthor: '', activeAnn: id, noteBusy: false, noteError: null });
+          const list = (s.communityAnchors[city.id] || []).concat([{ id, anchor }]);
+          const communityAnchors = Object.assign({}, s.communityAnchors, { [city.id]: list });
+          if (!supa) this.persistCommunity(annotations, communityAnchors);
+          this.setState({ annotations, communityAnchors, sel: null, composerNote: '', composerTags: '', composerAuthor: '', activeAnn: id, noteBusy: false, noteError: null });
         };
 
         if (SUBMIT_ENDPOINT) {
@@ -423,7 +465,7 @@
           try {
             const res = await submitNote(payload);
             if (!res.ok) { this.setState({ noteBusy: false, noteError: res.reason }); return; }
-            weaveIn(res.row);
+            add(res.row);
           } catch (e) { this.setState({ noteBusy: false, noteError: 'Could not reach the server — please try again.' }); }
           return;
         }
@@ -434,17 +476,20 @@
           this.setState({ noteBusy: true, noteError: null });
           const { data, error } = await supa.from('notes').insert(Object.assign({}, payload, { status: 'approved' })).select().single();
           if (error) { this.setState({ noteBusy: false, noteError: 'Could not post note — please try again.' }); return; }
-          weaveIn(data);
+          add(data);
           return;
         }
 
         // Local-only fallback (no Supabase configured): keep the note in this browser.
-        const ann = { note, color: 'gray', tags, scope: 'community', author: s.composerAuthor.trim().slice(0, 40) || 'you' };
-        const annotations = Object.assign({}, s.annotations, { [id]: ann });
-        const overrides = Object.assign({}, s.overrides, { [city.id]: newText });
-        const communityNotes = {}; Object.entries(annotations).forEach(([k, v]) => { if (v.scope === 'community') communityNotes[k] = v; });
-        try { localStorage.setItem('ic-notes', JSON.stringify(communityNotes)); localStorage.setItem('ic-overrides', JSON.stringify(overrides)); } catch (e) {}
-        this.setState({ annotations, overrides, sel: null, composerNote: '', composerTags: '', composerAuthor: '', activeAnn: id, noteError: null });
+        add(null);
+      }
+      // Serialize all community notes (across cities) to localStorage for the offline path.
+      persistCommunity(annotations, communityAnchors) {
+        const arr = [];
+        Object.entries(communityAnchors).forEach(([cityId, list]) => list.forEach(({ id, anchor }) => {
+          const a = annotations[id]; if (a) arr.push({ id, cityId, anchor, note: a.note, tags: a.tags, author: a.author });
+        }));
+        try { localStorage.setItem('ic-community', JSON.stringify(arr)); } catch (e) {}
       }
 
       // ---- compute render values ----
@@ -479,7 +524,7 @@
 
         // margin notes styled
         const marginNotes = notes.map(n => ({
-          id: n.id, num: n.num, segs: n.segs, tags: n.tags, author: n.author || (n.isAuthor ? 'Claire' : 'reader'),
+          id: n.id, num: n.num, quote: n.quote, segs: n.segs, tags: n.tags, author: n.author || (n.isAuthor ? 'Claire' : 'reader'),
           numStyle: { fontFamily: "'Courier New',monospace", fontSize: '.78rem', color: n.colorHex, minWidth: '16px', fontWeight: 600 },
           badgeStyle: { fontVariant: 'small-caps', letterSpacing: '.06em', fontSize: '.72rem', padding: '1px 6px', border: '1px solid ' + (n.isAuthor ? this.hexA(acc, .4) : '#d8ccb4'), color: n.isAuthor ? acc : '#7a6f58', background: n.isAuthor ? this.hexA(acc, .05) : 'transparent' },
           style: { cursor: 'pointer', padding: '11px 12px', marginBottom: '10px', background: s.activeAnn === n.id ? '#f7f2e6' : 'transparent', borderLeft: '2px solid ' + (s.activeAnn === n.id ? n.colorHex : '#e2d7c1'), transition: 'background .2s,border-color .2s' },
@@ -718,6 +763,9 @@
                                 <div style={{ display: 'flex', gap: '8px', alignItems: 'baseline' }}>
                                   <span style={note.numStyle}>{note.num}</span>
                                   <div style={{ flex: 1 }}>
+                                    {note.quote && (
+                                      <div style={{ fontStyle: 'italic', color: '#6f6555', fontSize: '.84rem', lineHeight: 1.35, marginBottom: '4px' }}>“{note.quote}”</div>
+                                    )}
                                     <div style={{ fontSize: '1rem', lineHeight: 1.5, color: '#3a342b' }}>
                                       {note.segs.map((ns, i) => (
                                         <span key={i} style={ns.style} onClick={ns.onClick}>{ns.text}</span>
